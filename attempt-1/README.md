@@ -1,0 +1,1 @@
+All work in this folder is heavily based on the VESDE continuous approach defined at https://github.com/yang-song/score_sde_pytorch
