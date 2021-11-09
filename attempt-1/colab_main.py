@@ -4,6 +4,7 @@ import torch.nn as nn
 import torchvision
 import torchsummary
 from runner import train
+import sys
 
 def summary(device):
     model = NCSNpp(3, 128, nn.SiLU(), device).to(device)
@@ -23,14 +24,17 @@ def load_cifar10(img_width, train, batch_size=64):
 
     return train_loader
 
-def main(device):
-    train_loader = load_cifar10(img_width=32, batch_size=32, train=True)
-    eval_loader = load_cifar10(img_width=32, batch_size=32, train=False)
+def main(device, batch_size):
+    train_loader = load_cifar10(img_width=32, batch_size=batch_size, train=True)
+    eval_loader = load_cifar10(img_width=32, batch_size=batch_size, train=False)
 
-    train(device, train_loader, eval_loader, vis=None, n_epochs=1300001, snapshot_freq=1000)
+    train(device, train_loader, eval_loader, vis=None, batch_size=batch_size, n_epochs=1300001, snapshot_freq=1000)
 
 if __name__ == "__main__":
+    bs = int(sys.argv[1]) if len(sys.argv) > 1 else 32
+    print(f"Using batch size {bs}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    main(device)
+    main(device, batch_size=bs)
     

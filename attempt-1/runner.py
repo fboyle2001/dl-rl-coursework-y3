@@ -8,6 +8,7 @@ import time
 import os
 import sampler
 import torchvision
+import time
 
 def optimise_fn(optimiser, params, step, lr=2e-4, warmup=5000, grad_clip=True):
     if warmup > 0:
@@ -77,7 +78,7 @@ def get_step_fn(sde, train, optimise_fn=None):
     
     return step_fn
 
-def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_freq=100):
+def train(device, train_loader, eval_loader, vis, batch_size, n_epochs=1300001, snapshot_freq=100):
     score_model = NCSNpp(3, 128, nn.SiLU(), device).to(device)
     opt = optim.Adam(score_model.parameters(), lr=2e-4, betas=(0.9, 0.999), eps=1e-8)
     sde = VESDE()
@@ -86,7 +87,7 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
 
     train_step_fn = get_step_fn(sde, train=True, optimise_fn=opt_fn)
     eval_step_fn = get_step_fn(sde, train=False, optimise_fn=opt_fn)
-    sampling_fn = sampler.get_sampling_fn(sde, (32, 3, 32, 32))
+    sampling_fn = sampler.get_sampling_fn(sde, (batch_size, 3, 32, 32))
 
     def cycle(iterable):
         while True:
@@ -104,6 +105,8 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
     train_iterator = iter(cycle(train_loader))
     eval_iterator = iter(cycle(eval_loader))
     total_loss = 0
+
+    start_time = time.time()
 
     for step in range(n_epochs):
         images, _ = next(train_iterator)
@@ -124,7 +127,8 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
         if step != 0 and step % 25 == 0:
             it = step // 25
             avg_loss = total_loss / 25
-            print(f"[Step {step}] Loss: {loss}, Avg: {avg_loss}")
+            duration = time.time() - start_time
+            print(f"[Step {step}] Loss: {loss}, Avg: {avg_loss}, Took {duration:.3f}s")
 
             if vis:
                 vis.scatter([[it, avg_loss]], win="avg_loss", update="append")
