@@ -112,11 +112,12 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
         loss = train_step_fn(images, score_model, opt, step)
 
         if step == 0:
-            vis.scatter([[0, loss.detach().cpu()]], opts=dict(
-                title="Avg. Loss",
-                xlabel="Epoch",
-                ylabel="Avg. Loss"
-            ), win="avg_loss")
+            if vis:
+                vis.scatter([[0, loss.detach().cpu()]], opts=dict(
+                    title="Avg. Loss",
+                    xlabel="Epoch",
+                    ylabel="Avg. Loss"
+                ), win="avg_loss")
         else:
             total_loss += loss.detach().cpu()
 
@@ -124,7 +125,10 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
             it = step // 25
             avg_loss = total_loss / 25
             print(f"[Step {step}] Loss: {loss}, Avg: {avg_loss}")
-            vis.scatter([[it, avg_loss]], win="avg_loss", update="append")
+
+            if vis:
+                vis.scatter([[it, avg_loss]], win="avg_loss", update="append")
+
             total_loss = 0
 
         if step != 0 and step % snapshot_freq == 0 or step == n_epochs - 1 or step == n_epochs:
@@ -136,7 +140,9 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
             print("Sampled")
             nrow = int(np.sqrt(sample.shape[0]))
             image_grid = torchvision.utils.make_grid(sample, nrow=nrow)
-            vis.images(image_grid, nrow=nrow, win="sample_images")
+
+            if vis:
+                vis.images(image_grid, nrow=nrow, win="sample_images")
 
             torchvision.utils.save_image(image_grid, f"{sample_folder}/sample-{save_step}.png")
         
