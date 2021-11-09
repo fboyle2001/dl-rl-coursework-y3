@@ -134,6 +134,7 @@ def train(device, train_loader, eval_loader, vis, batch_size, n_epochs=1300001, 
                 vis.scatter([[it, avg_loss]], win="avg_loss", update="append")
 
             total_loss = 0
+            start_time = time.time()
 
         if step != 0 and step % snapshot_freq == 0 or step == n_epochs - 1 or step == n_epochs:
             save_step = step // snapshot_freq
