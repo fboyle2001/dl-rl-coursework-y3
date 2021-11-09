@@ -13,7 +13,7 @@ def summary(device):
 
 def load_cifar10(img_width, train, batch_size=64):
     train_loader = torch.utils.data.DataLoader(
-        torchvision.datasets.CIFAR10("./data", train=train, download=False, transform=torchvision.transforms.Compose([
+        torchvision.datasets.CIFAR10("./data", train=train, download=True, transform=torchvision.transforms.Compose([
             torchvision.transforms.RandomVerticalFlip(),
             torchvision.transforms.RandomHorizontalFlip(),
             torchvision.transforms.ToTensor(),
