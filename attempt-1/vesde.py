@@ -11,6 +11,8 @@ class VESDE():
         else:
             self.discrete_sigmas = torch.linspace(self.sigma_min, self.sigma_max, N)
 
+        self.N = N
+
     @property
     def T(self):
         return 1
@@ -43,3 +45,42 @@ class VESDE():
         f = torch.zeros_like(x)
         G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
         return f, G
+
+    def reverse(self, score_fn, probability_flow=False):
+        """Create the reverse-time SDE/ODE.
+        Args:
+        score_fn: A time-dependent score-based model that takes x and t and returns the score.
+        probability_flow: If `True`, create the reverse-time ODE used for probability flow sampling.
+        """
+        N = self.N
+        T = self.T
+        sde_fn = self.sde
+        discretize_fn = self.discretize
+
+        # Build the class for reverse-time SDE.
+        class RSDE(self.__class__):
+            def __init__(self):
+                self.N = N
+                self.probability_flow = probability_flow
+
+            @property
+            def T(self):
+                return T
+
+            def sde(self, x, t):
+                """Create the drift and diffusion functions for the reverse SDE/ODE."""
+                drift, diffusion = sde_fn(x, t)
+                score = score_fn(x, t)
+                drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
+                # Set the diffusion function to zero for ODEs.
+                diffusion = 0. if self.probability_flow else diffusion
+                return drift, diffusion
+
+            def discretize(self, x, t):
+                """Create discretized iteration rules for the reverse diffusion sampler."""
+                f, G = discretize_fn(x, t)
+                rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (0.5 if self.probability_flow else 1.)
+                rev_G = torch.zeros_like(G) if self.probability_flow else G
+                return rev_f, rev_G
+
+        return RSDE()

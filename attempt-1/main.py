@@ -27,7 +27,8 @@ def load_cifar10(img_width, train, batch_size=64):
 def main(device, vis):
     train_loader = load_cifar10(img_width=32, batch_size=32, train=True)
     eval_loader = load_cifar10(img_width=32, batch_size=32, train=False)
-    train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_freq=100)
+
+    train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_freq=1000)
 
 if __name__ == "__main__":
     vis = visdom.Visdom()

@@ -6,6 +6,8 @@ from vesde import VESDE
 import numpy as np
 import time
 import os
+import sampler
+import torchvision
 
 def optimise_fn(optimiser, params, step, lr=2e-4, warmup=5000, grad_clip=True):
     if warmup > 0:
@@ -84,14 +86,20 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
 
     train_step_fn = get_step_fn(sde, train=True, optimise_fn=opt_fn)
     eval_step_fn = get_step_fn(sde, train=False, optimise_fn=opt_fn)
+    sampling_fn = sampler.get_sampling_fn(sde, (32, 3, 32, 32))
 
     def cycle(iterable):
         while True:
             for x in iterable:
                 yield x
 
-    save_folder = f"./snapshots/snapshots-{time.time()}"
-    os.mkdir(save_folder)
+    current_time = time.time()
+
+    snapshot_folder = f"./runs/{current_time}/snapshots"
+    os.makedirs(snapshot_folder)
+
+    sample_folder = f"./runs/{current_time}/samples"
+    os.makedirs(sample_folder)
 
     train_iterator = iter(cycle(train_loader))
     eval_iterator = iter(cycle(eval_loader))
@@ -121,7 +129,16 @@ def train(device, train_loader, eval_loader, vis, n_epochs=1300001, snapshot_fre
 
         if step != 0 and step % snapshot_freq == 0 or step == n_epochs - 1 or step == n_epochs:
             save_step = step // snapshot_freq
-            torch.save(score_model.state_dict(), f"{save_folder}/snapshot-{save_step}.model")
+            torch.save(score_model.state_dict(), f"{snapshot_folder}/snapshot-{save_step}.model")
+
+            print("Sampling...")
+            sample, n = sampling_fn(score_model)
+            print("Sampled")
+            nrow = int(np.sqrt(sample.shape[0]))
+            image_grid = torchvision.utils.make_grid(sample, nrow=nrow)
+            vis.images(image_grid, nrow=nrow, win="sample_images")
+
+            torchvision.utils.save_image(image_grid, f"{sample_folder}/sample-{save_step}.png")
         
         del images
 
