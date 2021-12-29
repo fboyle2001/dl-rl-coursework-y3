@@ -28,7 +28,7 @@ def main(device, batch_size):
     train_loader = load_cifar10(img_width=32, batch_size=batch_size, train=True)
     eval_loader = load_cifar10(img_width=32, batch_size=batch_size, train=False)
 
-    train(device, train_loader, eval_loader, vis=None, batch_size=batch_size, n_epochs=1300001, snapshot_freq=1000)
+    train(device, train_loader, eval_loader, vis=None, batch_size=batch_size, n_epochs=1300001, snapshot_freq=20000)
 
 if __name__ == "__main__":
     bs = int(sys.argv[1]) if len(sys.argv) > 1 else 32
