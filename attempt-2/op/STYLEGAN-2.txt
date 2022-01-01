@@ -1,0 +1,1 @@
+This is all from StyleGAN-2 make sure to cite! This is the same thing that the original score paper does

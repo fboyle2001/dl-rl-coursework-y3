@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torchvision
 import torchsummary
-from runner import train
+from runner import train, visualise
 import visdom
 
 def summary(device):
@@ -29,10 +29,11 @@ def main(device, vis):
     eval_loader = load_cifar10(img_width=32, batch_size=32, train=False)
 
     train(device, train_loader, eval_loader, vis, batch_size=32, n_epochs=1300001, snapshot_freq=1000)
+    # visualise(32, train_loader, device)
 
 if __name__ == "__main__":
-    vis = visdom.Visdom()
+    # vis = visdom.Visdom()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    main(device, vis)
+    main(device, vis=None)
     

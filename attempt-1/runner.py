@@ -9,6 +9,7 @@ import os
 import sampler
 import torchvision
 import time
+import torchviz
 
 def optimise_fn(optimiser, params, step, lr=2e-4, warmup=5000, grad_clip=True):
     if warmup > 0:
@@ -49,6 +50,7 @@ def get_sde_loss_fn(sde, train, eps=1e-5):
         t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps
         z = torch.randn_like(batch)
         mean, std = sde.marginal_prob(batch, t)
+
         perturbed_data = mean + std[:, None, None, None] * z
         score = score_fn(perturbed_data, t)
 
@@ -77,6 +79,22 @@ def get_step_fn(sde, train, optimise_fn=None):
         return loss
     
     return step_fn
+
+def visualise(batch_size, train_loader, device): 
+    def cycle(iterable):
+        while True:
+            for x in iterable:
+                yield x
+
+    train_iterator = iter(cycle(train_loader))
+    model = NCSNpp(3, 128, nn.SiLU(), device).to(device)
+    batch, _ = next(train_iterator)
+    batch = batch.to(device) 
+    t = torch.rand(batch.shape[0], device=device)
+
+    output = model(batch, t)
+    dot = torchviz.make_dot(output, params=dict(list(model.named_parameters()))).render("torchviz_ncsnpp", format="png")
+    dot.render("test.png")
 
 def train(device, train_loader, eval_loader, vis, batch_size, n_epochs=1300001, snapshot_freq=100):
     score_model = NCSNpp(3, 128, nn.SiLU(), device).to(device)
@@ -112,7 +130,7 @@ def train(device, train_loader, eval_loader, vis, batch_size, n_epochs=1300001, 
         images, _ = next(train_iterator)
         images = images.to(device)
 
-        loss = train_step_fn(images, score_model, opt, step)
+        loss = train_step_fn(images, score_model, opt, step) + 1e-5
 
         if step == 0:
             if vis:
