@@ -5,6 +5,9 @@ import torchvision
 import torchsummary
 import run_model
 
+"""
+Cite CIFAR-10 Learning Multiple Layers of Features from Tiny Images, Alex Krizhevsky, 2009.
+""" 
 def load_cifar10(img_width, train, batch_size=64):
     train_loader = torch.utils.data.DataLoader(
         torchvision.datasets.CIFAR10('../data', train=train, download=False, transform=torchvision.transforms.Compose([
