@@ -26,10 +26,10 @@ def cycle(iterable):
 if __name__ == "__main__":
     batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 32
     print("Using batch size", batch_size)
-    train_loader = load_cifar10(img_width=32, train=True, batch_size=batch_size, colab=True)
+    train_loader = load_cifar10(img_width=32, train=True, batch_size=batch_size)
     device = "cuda:0"
 
-    run_model.train(train_loader=train_loader, device=device)
+    run_model.train(train_loader=train_loader, device=device, colab=True)
 
 # eps=1e-6
 # model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
