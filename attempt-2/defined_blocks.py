@@ -198,27 +198,17 @@ class AttnBlock(nn.Module):
     def forward(self, x):
         B, C, H, W = x.size()
 
-        print(f"Channels {self.channels} B {B} C {C} H {H} W {W}")
-
         h = self.GNM0(x)
-        print("H Shape", h.shape)
         q = self.NIN0(h)
         k = self.NIN1(h)
         v = self.NIN2(h)
 
-        print("Q, K shape", q.shape, k.shape)
-
         w = torch.einsum('bchw,bcij->bhwij', q, k) * (int(C) ** (-0.5))
-        print(f"W0 Shape {w.shape}")
         w = torch.reshape(w, (B, H, W, H * W))
-        print(f"W1 Shape {w.shape}")
         w = F.softmax(w, dim=-1)
-        print(f"W2 Shape {w.shape}")
         w = torch.reshape(w, (B, H, W, H, W))
-        print(f"W3 Shape {w.shape}")
         h = torch.einsum('bhwij,bcij->bchw', w, v)
         h = self.NIN3(h)
-        print(f"Output shape", h.shape)
         return x + h
 
 """

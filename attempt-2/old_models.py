@@ -141,13 +141,10 @@ class NCSNpp(nn.Module):
         m_idx += 1
         h = modules[m_idx](h)
         m_idx += 1
-        print("HSSS", h.shape)
 
         for level in reversed(range(self.num_resolutions)):
             for block in range(self.num_res_blocks + 1):
                 p = hs.pop()
-                if level == self.num_resolutions - 1 and block == 0:
-                    print("Interested S", p.shape)
                 h = modules[m_idx](torch.cat([h, p], dim=1))
                 m_idx += 1
             
