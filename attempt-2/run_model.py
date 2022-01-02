@@ -46,7 +46,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
         optimise_fn(score_opt, model.parameters(), epoch) # TODO: Change, scale learning rate and optimise parameters
         total_loss += loss.detach().cpu()
 
-        if epoch % loss_freq == 0:
+        if epoch % loss_freq == 0 and epoch != 0:
             avg_loss = total_loss / loss_freq
             duration = time.time() - start
 
@@ -55,7 +55,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
             start = time.time()
             total_loss = 0
 
-        if epoch % save_freq == 0 or epoch == epochs - 1:
+        if (epoch % save_freq == 0 or epoch == epochs - 1) and epoch != 0:
             print(f"Reached sampling epoch {epoch}")
             # for param_tensor in model.state_dict():
             #     print(param_tensor, "\t", model.state_dict()[param_tensor].size())
