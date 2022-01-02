@@ -7,6 +7,7 @@ import time
 import os
 import numpy as np
 import old_models
+import sampling
 
 def cycle(iterable):
     while True:
@@ -14,22 +15,25 @@ def cycle(iterable):
             yield x
 
 def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
-    #model = NCSNpp(num_features=128, in_ch=3).to(device)
-    model = old_models.NCSNpp(in_ch=3, nf=128, activation_fn=nn.SiLU(), device=device).to(device)
+    model = NCSNpp(num_features=128, in_ch=3).to(device)
+    # model = old_models.NCSNpp(in_ch=3, nf=128, activation_fn=nn.SiLU(), device=device).to(device)
     score_opt = optim.Adam(model.parameters(), lr=2e-4, betas=(0.9, 0.999), eps=1e-8)
     sde = VESDE()
     train_iterator = iter(cycle(train_loader))
     total_loss = 0
     loss_freq = 25
     start = time.time()
-    save_freq = 500
+    save_freq = 1500
     
     save_folder = f"./models/{start}/saves"
+    sample_folder = f"./models/{start}/samples"
 
     if colab:
         save_folder = f"/content/gdrive/My Drive/models/{start}/saves"
+        sample_folder = f"/content/gdrive/My Drive/models/{start}/samples"
     
     os.makedirs(save_folder)
+    os.makedirs(sample_folder)
 
     for epoch in range(epochs):
         batch, _ = next(train_iterator)
@@ -52,7 +56,13 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
             total_loss = 0
 
         if epoch % save_freq == 0 or epoch == epochs - 1:
-            save_model(epoch, model, score_opt, f"{save_folder}/state-epoch-{epoch}.model")
+            print(f"Reached sampling epoch {epoch}")
+            # for param_tensor in model.state_dict():
+            #     print(param_tensor, "\t", model.state_dict()[param_tensor].size())
+            sampling.sample_from_model(model, path=sample_folder)
+
+            
+            # save_model(epoch, model, score_opt, f"{save_folder}/state-epoch-{epoch}.model")
 
 def save_model(epoch, model, opt, path):
     trainable_state = {
