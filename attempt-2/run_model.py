@@ -6,6 +6,7 @@ from model import NCSNpp
 import time
 import os
 import numpy as np
+import old_models
 
 def cycle(iterable):
     while True:
@@ -13,7 +14,8 @@ def cycle(iterable):
             yield x
 
 def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
-    model = NCSNpp(num_features=128, in_ch=3).to(device)
+    #model = NCSNpp(num_features=128, in_ch=3).to(device)
+    model = old_models.NCSNpp(in_ch=3, nf=128, activation_fn=nn.SiLU(), device=device)
     score_opt = optim.Adam(model.parameters(), lr=2e-4, betas=(0.9, 0.999), eps=1e-8)
     sde = VESDE()
     train_iterator = iter(cycle(train_loader))
