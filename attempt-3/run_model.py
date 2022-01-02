@@ -5,7 +5,7 @@ from sde import VESDE
 from model import NCSNpp
 import time
 import os
-import numpy as numpy
+import numpy as np
 
 def cycle(iterable):
     while True:

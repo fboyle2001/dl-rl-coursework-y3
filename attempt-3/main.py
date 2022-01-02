@@ -44,7 +44,7 @@ def check_params():
 
 def summary():
     device = "cuda:0"
-    batch_size = 32
+    batch_size = 64
     model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
     torchinfo.summary(model, [(batch_size, 3, 32, 32), (batch_size,)])
 
