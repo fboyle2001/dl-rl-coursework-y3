@@ -188,20 +188,26 @@ class NCSNpp(nn.Module):
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
+
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.first_up_single_res_block, False),
+
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
+
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.second_up_single_res_block, False),
+
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 4, out_ch=num_features * 2, layer_count=1), True),
+            
             (self.create_biggan_combined_block(in_ch=num_features * 3, out_ch=num_features * 2, layer_count=1), True),
             (self.create_reverse_biggan_combined_block(in_ch=num_features * 2, out_ch=num_features * 2, direction="up"), False),
+
             (self.create_biggan_combined_block(in_ch=num_features * 3, out_ch=num_features, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 2, out_ch=num_features, layer_count=1), True),
             (self.create_biggan_combined_block(in_ch=num_features * 2, out_ch=num_features, layer_count=1), True),

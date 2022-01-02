@@ -1,11 +1,51 @@
-
-
+GFP [Loop: Start, Level: N/A, Block: N/A]: es=128, scale=16
+Conv3x3 [Loop: Start, Level: N/A, Block: N/A]: in=3, out=128
+ResNetBlock [Loop: 0, Level: 0, Block: 0]: in=128, out=128, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 0, Block: 1]: in=128, out=128, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 0, Block: 2]: in=128, out=128, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 0, Block: 3]: in=128, out=128, sample_direction=None, dropout=0.1
+[L!NM]ResNetBlock [Loop: 0, Level: 0, Block: 3]: in=128, out=128, sample_direction=down, dropout=0.1
+[L!NM]DownsampleBlock [Loop: 0, Level: 0, Block: 3]: in=3, out=128
+ResNetBlock [Loop: 0, Level: 1, Block: 0]: in=128, out=256, sample_direction=None, dropout=0.1
+[AR]AttnBlock [Loop: 0, Level: 1, Block: 0]: in=256, out=256
+ResNetBlock [Loop: 0, Level: 1, Block: 1]: in=256, out=256, sample_direction=None, dropout=0.1
+[AR]AttnBlock [Loop: 0, Level: 1, Block: 1]: in=256, out=256
+ResNetBlock [Loop: 0, Level: 1, Block: 2]: in=256, out=256, sample_direction=None, dropout=0.1
+[AR]AttnBlock [Loop: 0, Level: 1, Block: 2]: in=256, out=256
+ResNetBlock [Loop: 0, Level: 1, Block: 3]: in=256, out=256, sample_direction=None, dropout=0.1
+[AR]AttnBlock [Loop: 0, Level: 1, Block: 3]: in=256, out=256
+[L!NM]ResNetBlock [Loop: 0, Level: 1, Block: 3]: in=256, out=256, sample_direction=down, dropout=0.1
+[L!NM]DownsampleBlock [Loop: 0, Level: 1, Block: 3]: in=128, out=256
+ResNetBlock [Loop: 0, Level: 2, Block: 0]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 2, Block: 1]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 2, Block: 2]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 2, Block: 3]: in=256, out=256, sample_direction=None, dropout=0.1
+[L!NM]ResNetBlock [Loop: 0, Level: 2, Block: 3]: in=256, out=256, sample_direction=down, dropout=0.1
+[L!NM]DownsampleBlock [Loop: 0, Level: 2, Block: 3]: in=256, out=256
+ResNetBlock [Loop: 0, Level: 3, Block: 0]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 3, Block: 1]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 3, Block: 2]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 0, Level: 3, Block: 3]: in=256, out=256, sample_direction=None, dropout=0.1
+[BT]ResNetBlock [Loop: Between, Level: N/A, Block: N/A]: in=256, out=256, sample_direction=None, dropout=0.1
+[BT]AttnBlock [Loop: Between, Level: N/A, Block: N/A]: in=256, out=256
+[BT]ResNetBlock [Loop: Between, Level: N/A, Block: N/A]: in=256, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 3, Block: 0]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 3, Block: 1]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 3, Block: 2]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 3, Block: 3]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 3, Block: 4]: in=512, out=256, sample_direction=None, dropout=0.1
+[L!0]ResNetBlock [Loop: 1, Level: 3, Block: 4]: in=256, out=256, sample_direction=up, dropout=0.1
+ResNetBlock [Loop: 1, Level: 2, Block: 0]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 2, Block: 1]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 2, Block: 2]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 2, Block: 3]: in=512, out=256, sample_direction=None, dropout=0.1
+ResNetBlock [Loop: 1, Level: 2, Block: 4]: in=512, out=256, sample_direction=None, dropout=0.1
+[L!0]ResNetBlock [Loop: 1, Level: 2, Block: 4]: in=256, out=256, sample_direction=up, dropout=0.1
 ResNetBlock [Loop: 1, Level: 1, Block: 0]: in=512, out=256, sample_direction=None, dropout=0.1
 ResNetBlock [Loop: 1, Level: 1, Block: 1]: in=512, out=256, sample_direction=None, dropout=0.1
 ResNetBlock [Loop: 1, Level: 1, Block: 2]: in=512, out=256, sample_direction=None, dropout=0.1
 ResNetBlock [Loop: 1, Level: 1, Block: 3]: in=512, out=256, sample_direction=None, dropout=0.1
 ResNetBlock [Loop: 1, Level: 1, Block: 4]: in=384, out=256, sample_direction=None, dropout=0.1
-**************
 [AR]AttnBlock [Loop: 1, Level: 1, Block: 4]: in=256, out=256
 [L!0]ResNetBlock [Loop: 1, Level: 1, Block: 4]: in=256, out=256, sample_direction=up, dropout=0.1
 ResNetBlock [Loop: 1, Level: 0, Block: 0]: in=384, out=128, sample_direction=None, dropout=0.1
