@@ -138,7 +138,7 @@ def upsample_conv_2d(x, w, k=None, factor=2, gain=1):
   #     data_format=data_format)
   ## JAX equivalent
 
-  return upfirdn2d(x, torch.tensor(k, device=x.device),
+  return upfirdn2d_python(x, torch.tensor(k, device=x.device),
                    pad=((p + 1) // 2 + factor - 1, p // 2 + 1))
 
 
@@ -221,7 +221,7 @@ def upsample_2d(x, k=None, factor=2, gain=1):
     k = [1] * factor
   k = _setup_kernel(k) * (gain * (factor ** 2))
   p = k.shape[0] - factor
-  return upfirdn2d(x, torch.tensor(k, device=x.device),
+  return upfirdn2d_python(x, torch.tensor(k, device=x.device),
                    up=factor, pad=((p + 1) // 2 + factor - 1, p // 2))
 
 
