@@ -20,7 +20,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
     total_loss = 0
     loss_freq = 25
     start = time.time()
-    save_freq = 100
+    save_freq = 500
     
     save_folder = f"./models/{start}/saves"
 
