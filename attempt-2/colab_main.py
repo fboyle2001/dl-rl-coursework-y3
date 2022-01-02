@@ -4,6 +4,7 @@ import torch.nn as nn
 import torchvision
 import torchsummary
 import run_model
+import sys
 
 def load_cifar10(img_width, train, batch_size=64):
     train_loader = torch.utils.data.DataLoader(
