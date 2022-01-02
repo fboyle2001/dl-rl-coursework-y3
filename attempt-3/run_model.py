@@ -21,7 +21,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
     total_loss = 0
     loss_freq = 25
     start = time.time()
-    save_freq = 50
+    save_freq = 2000
     
     save_folder = f"./models/{start}/saves"
     sample_folder = f"./models/{start}/samples"
@@ -54,12 +54,12 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
             total_loss = 0
 
         if (epoch % save_freq == 0 or epoch == epochs - 1) and epoch != 0:
-            print("Model saved")
             # print(f"Reached sampling epoch {epoch}")
             # for param_tensor in model.state_dict():
             #     print(param_tensor, "\t", model.state_dict()[param_tensor].size())
             # sampling.sample_from_model(model, path=sample_folder)
             save_model(epoch, model, score_opt, f"{save_folder}/state-epoch-{epoch}.model")
+            print("Model saved")
 
 def save_model(epoch, model, opt, path):
     trainable_state = {
