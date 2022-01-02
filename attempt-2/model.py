@@ -326,10 +326,10 @@ class NCSNpp(nn.Module):
         fwd_pass = self.final_group_norm_layer(fwd_pass)
         fwd_pass = self.final_conv_layer(fwd_pass)
 
-        print("T", t.shape)
+        # print("T", t.shape)
         # Not entirely sure what this is doing here, some form of rescaling? on the channels? (batch_size, img_channels)?
         t_shape = t.reshape((batch.shape[0], *([1] * len(batch.shape[1:]))))
-        print("TS, FWP", t_shape.shape, fwd_pass.shape)
+        # print("TS, FWP", t_shape.shape, fwd_pass.shape)
         fwd_pass = fwd_pass / t_shape
         return fwd_pass
         

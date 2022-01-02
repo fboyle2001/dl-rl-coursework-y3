@@ -16,7 +16,7 @@ class VESDE:
     Song et al. used σ_min = 0.01 and σ_max = 50 in their repo
     (see https://github.com/yang-song/score_sde_pytorch/blob/1618ddea340f3e4a2ed7852a0694a809775cf8d0/sde_lib.py#L208)
     """
-    def __init__(self, sigma_min, sigma_max):
+    def __init__(self, sigma_min=0.01, sigma_max=50):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.ln_sqr_sigma_ratio = np.log((sigma_max / sigma_min) ** 2)

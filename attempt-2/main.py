@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torchvision
 import torchsummary
+import run_model
 
 def load_cifar10(img_width, train, batch_size=64):
     train_loader = torch.utils.data.DataLoader(
@@ -21,14 +22,14 @@ def cycle(iterable):
         for x in iterable:
             yield x
 
-train_loader = load_cifar10(img_width=32, train=True)
-train_iterator = iter(cycle(train_loader))
+train_loader = load_cifar10(img_width=32, train=True, batch_size=32)
+device = "cuda:0"
 
-device = "cuda"
+run_model.train(train_loader=train_loader, device=device)
 
-eps=1e-6
-model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
-batch, _ = next(train_iterator)
-batch = batch.to(device)
-t = torch.rand(batch.shape[0], device=batch.device) * (1 - eps) + eps
-model(batch, t)
+# eps=1e-6
+# model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
+# batch, _ = next(train_iterator)
+# batch = batch.to(device)
+# t = torch.rand(batch.shape[0], device=batch.device) * (1 - eps) + eps
+# model(batch, t)
