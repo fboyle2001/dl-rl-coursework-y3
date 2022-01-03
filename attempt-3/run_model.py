@@ -46,7 +46,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
 
     if previous_save is not None:
         print("Restoring training from previous saved state")
-        load_path = model_state_path
+        load_path = previous_save
 
         if colab:
             load_path = f"{gdrive_prefix}{load_path}"
@@ -54,7 +54,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
             load_path = f"./{load_path}"
 
         print(f"Location: {load_path}")
-        
+
         saved_epoch, model_state, opt_state = load_state(load_path)
 
         model.load_state_dict(model_state)
