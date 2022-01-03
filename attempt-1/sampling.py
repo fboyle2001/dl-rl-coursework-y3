@@ -25,7 +25,7 @@ def sample_from_model(model, epoch, batch_size=128, path="./model_states/2/"):
 
     torchvision.utils.save_image(image_grid, f"{path}sample-{epoch}.png")
 
-epoch = 10000
+epoch = 18000
 model_state_path = f"./model_states/2/state-epoch-{epoch}.model"
 print(f"Sampling {model_state_path}")
 device = "cuda:0"

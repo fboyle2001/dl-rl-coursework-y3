@@ -8,6 +8,8 @@ import os
 import numpy as np
 
 def load_state(path):
+    # Load to CPU due to surge in memory usage when loading
+    # otherwise get a CUDA runtime error on GPU
     model_info = torch.load(path, map_location="cpu")
     return model_info["epoch"], model_info["model_state"], model_info["optimiser"]
 

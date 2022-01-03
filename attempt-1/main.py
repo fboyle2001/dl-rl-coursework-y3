@@ -6,7 +6,7 @@ import torchinfo
 from runner import train, visualise
 import visdom
 
-def load_cifar10(img_width, train, batch_size=64):
+def load_cifar10(img_width, train, batch_size=32):
     train_loader = torch.utils.data.DataLoader(
         torchvision.datasets.CIFAR10('../data', train=train, download=False, transform=torchvision.transforms.Compose([
             torchvision.transforms.RandomVerticalFlip(),
@@ -16,6 +16,26 @@ def load_cifar10(img_width, train, batch_size=64):
         ])),
     shuffle=True, batch_size=batch_size, drop_last=True)
 
+    return train_loader
+
+def load_combined_cifar10_stl10(img_width, train, batch_size=32):
+    cifar10 = torchvision.datasets.CIFAR10('../data', train=train, download=False, transform=torchvision.transforms.Compose([
+        torchvision.transforms.RandomVerticalFlip(),
+        torchvision.transforms.RandomHorizontalFlip(),
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Resize(img_width)
+    ]))
+
+    stl10 = torchvision.datasets.STL10('../data', train=train, download=False, transform=torchvision.transforms.Compose([
+        torchvision.transforms.RandomVerticalFlip(),
+        torchvision.transforms.RandomHorizontalFlip(),
+        torchvision.transforms.ToTensor(),
+        torchvision.transforms.Resize(img_width)
+    ]))
+
+    combined = torch.utils.data.ConcatDataset([cifar10, stl10])
+
+    train_loader = torch.utils.data.DataLoader(combined, shuffle=True, batch_size=batch_size, drop_last=True)
     return train_loader
 
 def main(device, vis):
