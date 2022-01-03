@@ -51,6 +51,6 @@ def summary():
 def run():
     device = "cuda:0"
     train_loader = load_cifar10(img_width=32, train=True, batch_size=32)
-    run_model.train(train_loader=train_loader, device=device)
+    run_model.train(train_loader=train_loader, device=device, previous_save="state-epoch-10000.model")
 
-summary()
+run()

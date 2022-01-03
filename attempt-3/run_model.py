@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 def load_state(path):
-    model_info = torch.load(path)
+    model_info = torch.load(path, map_location="cpu")
     return model_info["epoch"], model_info["model_state"], model_info["optimiser"]
 
 def cycle(iterable):
@@ -21,7 +21,6 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
     # model = old_models.NCSNpp(in_ch=3, nf=128, activation_fn=nn.SiLU(), device=device).to(device)
     score_opt = optim.Adam(model.parameters(), lr=2e-4, betas=(0.9, 0.999), eps=1e-8)
     start_epoch = 0
-
 
     sde = VESDE()
     train_iterator = iter(cycle(train_loader))
@@ -58,11 +57,12 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
         saved_epoch, model_state, opt_state = load_state(load_path)
 
         model.load_state_dict(model_state)
+        model.to(device)
         score_opt.load_state_dict(opt_state)
 
         start_epoch = int(saved_epoch) + 1
 
-        print(f"Starting from epoch {saved_epoch}")
+        print(f"Starting from epoch {start_epoch}")
 
     for epoch in range(start_epoch, epochs):
         batch, _ = next(train_iterator)
