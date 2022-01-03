@@ -139,6 +139,7 @@ cython_debug/
 
 *.pyd
 *.dll
+**/*.model
 
 data/*
 attempt-0/*

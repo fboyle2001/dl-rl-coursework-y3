@@ -7,15 +7,22 @@ import time
 import os
 import numpy as np
 
+def load_state(path):
+    model_info = torch.load(path)
+    return model_info["epoch"], model_info["model_state"], model_info["optimiser"]
+
 def cycle(iterable):
     while True:
         for x in iterable:
             yield x
 
-def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
+def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_save=None):
     model = NCSNpp(num_features=128, in_ch=3).to(device)
     # model = old_models.NCSNpp(in_ch=3, nf=128, activation_fn=nn.SiLU(), device=device).to(device)
     score_opt = optim.Adam(model.parameters(), lr=2e-4, betas=(0.9, 0.999), eps=1e-8)
+    start_epoch = 0
+
+
     sde = VESDE()
     train_iterator = iter(cycle(train_loader))
     total_loss = 0
@@ -23,17 +30,41 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False):
     start = time.time()
     save_freq = 2000
     
-    save_folder = f"./models/{start}/saves"
-    sample_folder = f"./models/{start}/samples"
+    gdrive_prefix = "/content/gdrive/MyDrive/"
+    save_folder = f"models/{start}/saves"
+    sample_folder = f"models/{start}/samples"
 
     if colab:
-        save_folder = f"/content/gdrive/My Drive/models/{start}/saves"
-        sample_folder = f"/content/gdrive/My Drive/models/{start}/samples"
+        save_folder = f"{gdrive_prefix}{save_folder}"
+        sample_folder = f"{gdrive_prefix}{sample_folder}"
+    else:
+        save_folder = f"./{save_folder}"
+        sample_folder = f"./{sample_folder}"
     
     os.makedirs(save_folder)
     os.makedirs(sample_folder)
 
-    for epoch in range(epochs):
+    if previous_save is not None:
+        print("Restoring training from previous saved state")
+        load_path = model_state_path
+
+        if colab:
+            load_path = f"{gdrive_prefix}{load_path}"
+        else:
+            load_path = f"./{load_path}"
+
+        print(f"Location: {load_path}")
+        
+        saved_epoch, model_state, opt_state = load_state(load_path)
+
+        model.load_state_dict(model_state)
+        score_opt.load_state_dict(opt_state)
+
+        start_epoch = int(saved_epoch) + 1
+
+        print(f"Starting from epoch {saved_epoch}")
+
+    for epoch in range(start_epoch, epochs):
         batch, _ = next(train_iterator)
         batch = batch.to(device)
         
