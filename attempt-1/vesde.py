@@ -1,6 +1,12 @@
 import torch
 import numpy as np
 
+class VPSDE():
+    pass
+
+class subVPSDE():
+    pass
+
 class VESDE():
     def __init__(self, sigma_min=0.01, sigma_max=50, N=1000, log_spacing=True):
         self.sigma_min = sigma_min

@@ -10,19 +10,32 @@ class VESDE:
     (or S is an approximation thereof such as a deep neural network)
     f is known as the drift and g is the diffusion
 
-    For the Variance Exploding SDE (VESDE), f(X, t) = 0 (in the shape of the tensor X) and g(t) = σ * sqrt(2 * (ln(σ_max) - ln(σ_min)))
-    where σ = (σ_max)^t / (σ_min)^(t-1)
+    For the Variance Exploding SDE (VESDE), f(X, t) = 0 (in the shape of the tensor X) and g(t) = σ(t) * sqrt(2 * (ln(σ_max) - ln(σ_min)))
+    where σ(t) = (σ_max)^t / (σ_min)^(t-1)
 
-    Song et al. used σ_min = 0.01 and σ_max = 50 in their repo
+    Song et al. used σ_min = σ(0) = 0.01 and σ_max = σ(1) = 50 in their repo
     (see https://github.com/yang-song/score_sde_pytorch/blob/1618ddea340f3e4a2ed7852a0694a809775cf8d0/sde_lib.py#L208)
     """
     def __init__(self, sigma_min=0.01, sigma_max=50):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.ln_sqr_sigma_ratio = np.log((sigma_max / sigma_min) ** 2)
+        self.prior_distribution = torch.distributions.normal.Normal(0, sigma_max)
+
+    def sample_from_prior(self, batch_size, img_width, img_channels=3):
+        """
+        Take a sample of data from the prior
+        """
+        return self.prior_distribution.sample([batch_size, img_channels, img_width, img_width])
 
     def sigma(self, t):
         """
+        This calculates σ(t) over the domain t ∈ [0, 1] satisifying:
+
+            σ_min = σ(0) < σ(t - ε) < σ(t) < σ(t + ε) < σ(1) = σ_max 
+
+        for t ∈ (0, 1) and ε small
+
         t may be a tensor here, in that case we get a tensor out with each component being the power
         """
         return self.sigma_min * (self.sigma_max / self.sigma_min) ** t
@@ -39,9 +52,9 @@ class VESDE:
         g: Diffusion coefficient of the SDE
         """
 
-        return self.sigma(t) * self.ln_sqr_sigma_ratio
+        return self.sigma(t) * np.sqrt(self.ln_sqr_sigma_ratio)
 
-    def reverse_drift_coeff(self, x, t, score_function):
+    def reverse_drift_coeff(self, x, t, score):
         """
         f(X, t) - g(t)^2 * S(X, t)
         """

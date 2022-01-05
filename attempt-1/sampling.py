@@ -14,9 +14,9 @@ def load_state(path):
     model_info = torch.load(path)
     return model_info["epoch"], model_info["model_state"], model_info["optimiser"]
 
-def sample_from_model(model, epoch, batch_size=128, path="./model_states/2/"):
+def sample_from_model(model, epoch, batch_size=128, path="./model_states/3/"):
     sde = oldsde.VESDE()
-    sample_fn = sampler.get_sampling_fn(sde, (batch_size, 3, 32, 32))
+    sample_fn = sampler.get_sampling_fn(sde, (batch_size, 3, 48, 48))
     print("Sampling...")
     sample, n = sample_fn(model)
     print("Sampled")
@@ -25,8 +25,8 @@ def sample_from_model(model, epoch, batch_size=128, path="./model_states/2/"):
 
     torchvision.utils.save_image(image_grid, f"{path}sample-{epoch}.png")
 
-epoch = 18000
-model_state_path = f"./model_states/2/state-epoch-{epoch}.model"
+epoch = 104000
+model_state_path = f"./model_states/3/state-epoch-{epoch}.model"
 print(f"Sampling {model_state_path}")
 device = "cuda:0"
 model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
@@ -34,5 +34,15 @@ _, model_state, _ = load_state(model_state_path)
 
 model.load_state_dict(model_state)
 model.eval()
+sde = oldsde.VESDE()
 
 sample_from_model(model, epoch)
+
+# x = sde.prior_sampling((32, 3, 48, 48))
+# print(x)
+# print(x.size())
+
+# ode_sampler = sampler.get_ode_sampler(sde, (32, 3, 48, 48), lambda x: (x + 1.) / 2.)
+# print("Got ODE sampler")
+# r = ode_sampler(model)
+# print(r)

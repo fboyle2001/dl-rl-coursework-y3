@@ -77,11 +77,10 @@ def check_params():
     for param_tensor in model.state_dict():
         print(param_tensor, "\t", model.state_dict()[param_tensor].size())
 
-def summary():
+def summary(batch_size=64, img_size=32):
     device = "cuda:0"
-    batch_size = 64
     model = score_models.NCSNpp(num_features=128, in_ch=3).to(device)
-    torchinfo.summary(model, [(batch_size, 3, 32, 32), (batch_size,)])
+    torchinfo.summary(model, [(batch_size, 3, img_size, img_size), (batch_size,)])
 
 def run(dataset, sample=False):
     device = "cuda:0"
@@ -119,4 +118,6 @@ def combined_dataset_runner():
     torchvision.utils.save_image(image_grid, f"{time.time()}.png")
     plt.imshow(image_grid)
     
-run("stl10", sample=True)
+run("cifar10", sample=True)
+
+# summary(batch_size=16, img_size=64)
