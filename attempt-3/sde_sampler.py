@@ -4,12 +4,18 @@ import scipy.integrate
 import math
 import time
 
-def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=None, img_channels=3, snr=0.16, steps=1000):
+def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=None, img_channels=3, snr=0.16, steps=1000, verbose=True):
+    """
+    Use  Reverse Diffusion for prediction and Lanegvin Dynamics for correction
+    1 step of each per timestep for a default of 1000 iterations
+    """
     with torch.no_grad():
         x_i_one = prior_sample
         
         if prior_sample is None:
             x_i_one = sde.sample_from_prior(img_count, img_width)
+        else:
+            print("Using known prior_sample")
 
         x_i_one = x_i_one.to(model.device)
         last_denoised = None
@@ -17,13 +23,14 @@ def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=
         start_time = time.time()
 
         for i in range(steps - 1, -1, -1):
-            if i % 100 == 0:
-                print(f"Done {i} samples of 1000 time elapsed is {time.time()-start_time:.3f} seconds")
-            # Reverse Diffusion Predictor
-            x_i, denoised_x_i = compute_reverse_diff_predictor_step(x_i_one, timesteps[i], timesteps[i + 1], sde, model)
+            if i % 100 == 0 and verbose:
+                print(f"Done {steps - i} samples of {steps} time elapsed is {time.time()-start_time:.3f} seconds")
 
-            # Langevin Corrector
+            # Correct
             x_i, denoised_x_i = compute_langevin_corrector_step(x_i, timesteps[i], sde, model, snr)
+            
+            # Predict
+            x_i, denoised_x_i = compute_reverse_diff_predictor_step(x_i_one, timesteps[i], timesteps[i + 1], sde, model)
 
             x_i_one = x_i
             last_denoised = denoised_x_i
@@ -46,18 +53,6 @@ def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=
     return previous_x_i
     """
 
-    # Will use Langevin Corrector and Reverse Diffusion Predictor, 1 step, 1 step, 1000 iterations
-
-def compute_langevin_corrector_step(x, t, sde, model, snr):
-    # Algorithm 4
-    noise = torch.randn(x.shape).to(model.device)
-    t = torch.full((x.shape[0],), t).to(model.device)
-    score = model(x, t)
-    epsilon = 2 * (snr * torch.linalg.norm(noise) / torch.linalg.norm(score)) ** 2
-    denoised_x = x + epsilon * score
-    x = denoised_x + math.sqrt(2 * epsilon) * noise
-    return x, denoised_x
-
 def compute_reverse_diff_predictor_step(x, t, last_t, sde, model):
     sigma_i_plus_one = sde.sigma(last_t)
     sigma_i = sde.sigma(t)
@@ -67,4 +62,16 @@ def compute_reverse_diff_predictor_step(x, t, last_t, sde, model):
     denoised_x = x + sigma_sqr * model(x, time_sigmas)
     noise = torch.randn(denoised_x.shape).to(model.device)
     x = denoised_x + math.sqrt(sigma_sqr) * noise
+    
+    return x, denoised_x
+
+def compute_langevin_corrector_step(x, t, sde, model, snr):
+    # Algorithm 4
+    noise = torch.randn(x.shape).to(model.device)
+    t = torch.full((x.shape[0],), t).to(model.device)
+    score = model(x, t)
+    epsilon = 2 * (snr * torch.linalg.norm(noise) / torch.linalg.norm(score)) ** 2
+    denoised_x = x + epsilon * score
+    x = denoised_x + math.sqrt(2 * epsilon) * noise
+
     return x, denoised_x
