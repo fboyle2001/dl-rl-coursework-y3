@@ -113,7 +113,7 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
         score = model(perturbed_batch, time_sigmas)
 
         # compute the loss, need to link back to an equation
-        expectation_objective = torch.square(time_sigmas * score + gaussian_noise)
+        expectation_objective = torch.square(time_sigmas_reshaped * score + gaussian_noise)
         # take the half sum
         # merge the final 3 dimensions and then take the half sum over the new final axis
         loss_per_instance = 0.5 * torch.sum(expectation_objective.reshape(expectation_objective.shape[0], -1), -1)

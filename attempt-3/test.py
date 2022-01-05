@@ -8,6 +8,7 @@ import ode_sampler
 import math
 import time
 import sde_sampler
+import sys
 
 class TestModel:
     def __init__(self, img_width=48, verbose=False, strict_checks=True):
@@ -63,6 +64,22 @@ class TestModel:
 
         np.save("x_normal.npy", x.detach().cpu().numpy())
         np.save("dnx.npy", denoised_x.detach().cpu().numpy())
+
+def load_and_display_npy(path, shape=None):
+    data = npy.load(path)
+
+    if shape is not None:
+        data = data.reshape(shape)
+    
+    data = torch.tensor(data)
+    grid = torchvision.utils.make_grid(data, nrow=int(math.sqrt(data.shape[0])))
+    grid = grid.detach().cpu().permute(1, 2, 0)
+
+    plt.imshow(grid)
+    plt.show(block=True)
+
+load_and_display_npy("dnx.npy")
+sys.exit(0)
 
 test = TestModel()
 test.verbose = True

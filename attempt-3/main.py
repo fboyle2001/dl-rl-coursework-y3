@@ -92,7 +92,7 @@ def run(dataset, sample=False):
     if dataset.lower() == "cifar10":
         train_loader = load_cifar10(img_width=32, train=True, batch_size=32)
     else: 
-        train_loader = load_stl10(img_width=64, batch_size=8)
+        train_loader = load_stl10(img_width=48, batch_size=2)
 
     if sample:
         it = iter(cycle(train_loader))
@@ -118,6 +118,6 @@ def combined_dataset_runner():
     torchvision.utils.save_image(image_grid, f"{time.time()}.png")
     plt.imshow(image_grid)
     
-run("cifar10", sample=True)
+run("stl10", sample=False)
 
 # summary(batch_size=16, img_size=64)
