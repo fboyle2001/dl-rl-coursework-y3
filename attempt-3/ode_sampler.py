@@ -72,6 +72,10 @@ def convert_ivp_solution_shape(ivp_solution, prior_shape, scale=False):
     return image_tensor
 
 def find_prior_from_image(x_0, model, sde, stability=1e-5, verbose=False):
+    """
+    Reverse of probability_flow_sampler, we integrate from 0 to T = 1 instead
+    which takes a batch of images to the latent space (the prior distribution)
+    """
     x_0_shape = x_0.shape
     x_0 = x_0.detach().cpu().numpy().reshape(-1)
 

@@ -69,8 +69,8 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
     epsilon = 1e-6
     time_sample_distribution = torch.distributions.uniform.Uniform(0, 1)
     z_normal_distribution = torch.distributions.normal.Normal(0, 1)
-    max_learning_rate = 2e-4
-    warmup_period = 5000
+    max_learning_rate = 3e-4
+    warmup_period = 10000
     calculate_learning_rate = lambda epoch: min((epoch / warmup_period) * max_learning_rate, max_learning_rate)
 
     model.train()

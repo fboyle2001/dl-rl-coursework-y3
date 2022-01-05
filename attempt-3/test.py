@@ -114,10 +114,11 @@ class TestModel:
         num_steps = 31
 
         #linear_interpolation = lambda step: a_n + step * (b_n - a_n) / num_steps
-        o_interpolation = lambda step: a_n * np.sin((math.pi / 2) * (step / num_steps)) + b_n * (1 - np.sin((math.pi / 2) * (step / num_steps)))
+        #o_interpolation = lambda step: a_n * np.sin((math.pi / 2) * (step / num_steps)) + b_n * (1 - np.sin((math.pi / 2) * (step / num_steps)))
         #interp_steps = np.array([linear_interpolation(step) for step in range(num_steps + 1)])
-        interp_steps = np.array([o_interpolation(step) for step in range(num_steps + 1)])
+        #interp_steps = np.array([o_interpolation(step) for step in range(num_steps + 1)])
         # interp_steps = scipy.interpolate.RBFInterpolator()
+        interp_steps = np.array([slerp(step / num_steps, a_n, b_n) for step in range(num_steps + 1)])
         interp_steps = interp_steps.reshape((num_steps + 1, 3, self.img_width, self.img_width))
         interp_steps = torch.tensor(interp_steps)
 
