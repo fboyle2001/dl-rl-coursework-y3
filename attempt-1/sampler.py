@@ -1,6 +1,7 @@
 import abc
 import runner
 import torch
+import time
 
 class Predictor(abc.ABC):
     """The abstract class for a predictor algorithm."""
@@ -104,8 +105,17 @@ def get_pc_sampler(sde, shape, predictor, corrector, snr=0.16, n_steps=1, eps=1e
                     
                 t = timesteps[i]
                 vec_t = torch.ones(shape[0], device=t.device) * t
+
+                c_start_time = time.time()
                 x, x_mean = shared_corrector_update_fn(x, vec_t, sde, model, corrector, continuous=True, snr=snr, n_steps=n_steps)
+                c_end_time = time.time() - c_start_time
+
+                p_start_time = time.time()
                 x, x_mean = shared_predictor_update_fn(x, vec_t, sde, model, predictor, probability_flow=False, continuous=True)
+                p_end_time = time.time() - p_start_time
+
+                print(f"Predictor took {p_end_time:.5f} s")
+                print(f"Corrector took {c_end_time:.5f} s")
 
             return x_mean, sde.N * (n_steps + 1)
     

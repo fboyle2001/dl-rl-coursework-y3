@@ -98,16 +98,6 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
         gaussian_noise = z_normal_distribution.sample(batch.shape).to(device)
 
         # Equivalent to sampling from N(x(0), sigma(t)**2) to get the perturbed data with the noise
-        # what about subtracting sigma(0)**2 ??? 
-
-        # print("A")
-
-        # print(batch.shape)
-        # print(time_sigmas_reshaped.shape)
-        # print(gaussian_noise.shape)
-
-        # print((time_sigmas_reshaped * gaussian_noise).shape)
-
         perturbed_batch = batch + time_sigmas_reshaped * gaussian_noise
         # compute the estimate of the score using the model that is being trained
         score = model(perturbed_batch, time_sigmas)
@@ -119,7 +109,6 @@ def train(train_loader, epochs=1300001, device="cuda:0", colab=False, previous_s
         loss_per_instance = 0.5 * torch.sum(expectation_objective.reshape(expectation_objective.shape[0], -1), -1)
         # average over the batch
         batch_loss = torch.mean(loss_per_instance)
-        # back prop
         batch_loss.backward()
 
         if epoch <= warmup_period:

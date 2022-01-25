@@ -1,6 +1,9 @@
 """
-Everything is taken from https://github.com/yang-song/score_sde_pytorch/blob/1618ddea340f3e4a2ed7852a0694a809775cf8d0/models/layers.py here
-Cite DDPM paper
+This code is not my implementation.
+The implementation is taken from Song et al. 2021, the code is based on Ho et al. 2020
+[https://github.com/yang-song/score_sde_pytorch/blob/1618ddea340f3e4a2ed7852a0694a809775cf8d0/models/layers.py]
+This code is used for initialise some layers in the network and ports a function available in TensorFlow 
+that isn't available in PyTorch
 """ 
 import torch
 import numpy as np

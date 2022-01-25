@@ -69,13 +69,26 @@ class TestModel:
 
         return images
 
-    def sample_rsde(self, batch_size, prior_sample=None):
+    def sample_rsde(self, batch_size, prior_sample=None, show=True):
         self._eval_check()
-
         x, denoised_x = sde_sampler.predictor_corrector_sampling(batch_size, self.img_width, self.model, self.sde, prior_sample=prior_sample)
 
-        np.save("x_normal_1.npy", x.detach().cpu().numpy())
-        np.save("dnx_1.npy", denoised_x.detach().cpu().numpy())
+        if show:
+            grid = torchvision.utils.make_grid(denoised_x, nrow=int(math.sqrt(denoised_x.shape[0])))
+            grid = grid.detach().cpu().permute(1, 2, 0)
+
+            plt.title("Denoised")
+            plt.imshow(grid)
+            plt.show(block=True)
+
+            grid = torchvision.utils.make_grid(x, nrow=int(math.sqrt(x.shape[0])))
+            grid = grid.detach().cpu().permute(1, 2, 0)
+
+            plt.title("Noised")
+            plt.imshow(grid)
+            plt.show(block=True)
+
+        return x, denoised_x
 
     def summarise_model(self, batch_size):
         torchinfo.summary(self.model, [(batch_size, 3, self.img_width, self.img_width), (batch_size,)])
@@ -94,6 +107,56 @@ class TestModel:
         plt.imshow(grid)
         plt.show(block=True)
 
+    def interpolate_images(self, start, end, steps=10, method="slerp", show=True, return_raw=False):
+        self._eval_check()
+        assert method in ["slerp", "linear"], "Method must be slerp or linear"
+
+        timesteps = steps
+
+        if type(steps) is int:
+            timesteps = np.linspace(0, 1, timesteps)
+
+        # Flatten the arrays
+        start = start.reshape(-1)#.numpy()
+        end = end.reshape(-1)#.numpy()
+
+        evaluation_samples = []
+
+        # Calculate the points on the interpolation
+        if method == "linear":
+            evaluation_samples = [start + timestep * (end - start) for timestep in timesteps]
+        elif method == "slerp":
+            evaluation_samples = [slerp(timestep, start, end) for timestep in timesteps]
+        
+        # Convert to numpy array
+        evaluation_samples = np.array(evaluation_samples)
+        evaluation_samples = evaluation_samples.reshape(len(evaluation_samples), 3, self.img_width, self.img_width)
+        evaluation_samples = torch.tensor(evaluation_samples)
+
+        time_start = time.time()
+        print("Starting sampling from ODE for interpolation")
+        solution, shape = ode_sampler.probability_flow_sampler(evaluation_samples.shape[0], self.img_width, self.model, self.sde, prior_sample=evaluation_samples, verbose=self.verbose)
+        print(f"Finished ODE sampling took {time.time() - time_start:.3f} seconds")
+
+        if not show and return_raw:
+            return solution, shape 
+
+        images = ode_sampler.convert_ivp_solution_shape(solution, shape)
+
+        if not show and not return_raw:
+            return images
+
+        grid = torchvision.utils.make_grid(images, nrow=int(math.sqrt(images.shape[0])))
+        grid = grid.detach().cpu().permute(1, 2, 0)
+
+        plt.imshow(grid)
+        plt.show(block=True)
+
+        if return_raw:
+            return solution, shape
+
+        return images
+
     def likelihood_test(self, a, b):
         self._eval_check()
         
@@ -109,9 +172,9 @@ class TestModel:
 
         # print(a)
 
-        a_n = a.reshape(-1).numpy()
-        b_n = b.reshape(-1).numpy()
-        num_steps = 31
+        a_n = a.reshape(-1)
+        b_n = b.reshape(-1)
+        num_steps = 10
 
         #linear_interpolation = lambda step: a_n + step * (b_n - a_n) / num_steps
         #o_interpolation = lambda step: a_n * np.sin((math.pi / 2) * (step / num_steps)) + b_n * (1 - np.sin((math.pi / 2) * (step / num_steps)))
@@ -174,7 +237,7 @@ def cycle(iterable):
             yield x
 
 def load_stl10(img_width=48, batch_size=16):
-    stl10 = torchvision.datasets.STL10('../data', split="train+unlabeled", download=True, transform=torchvision.transforms.Compose([
+    stl10 = torchvision.datasets.STL10('../data', split="test", download=True, transform=torchvision.transforms.Compose([
         torchvision.transforms.RandomVerticalFlip(),
         torchvision.transforms.RandomHorizontalFlip(),
         torchvision.transforms.ToTensor(),
@@ -188,9 +251,55 @@ def load_stl10(img_width=48, batch_size=16):
 # load_and_display_npy("dnx_1.npy")
 # load_and_display_npy("prior_images_1.npy")
 # sys.exit(0)
-test = TestModel(verbose=True)
+width=64
+
+test = TestModel(verbose=True, img_width=width)
 test.model.eval()
-test.load_parameters("../attempt-1/model_states/3/state-epoch-142000.model")
+
+if width == 48:
+    test.load_parameters("../attempt-1/model_states/3/state-epoch-142000.model")
+elif width == 64:
+    test.load_parameters("./states/stl10-64/state-epoch-158000.pt")
+
+test.sample_rsde(64)
+
+# eval_loader = torch.utils.data.DataLoader(
+#     torchvision.datasets.STL10('../data', split='test', download=True, transform=torchvision.transforms.Compose([
+#         torchvision.transforms.ToTensor(),
+#         torchvision.transforms.Resize(width)
+#     ])),
+# shuffle=True, batch_size=8, drop_last=True)
+
+# eval_iterator = iter(cycle(eval_loader))
+# rbatch, _ = next(eval_iterator)
+
+# start_image = rbatch[0, :, :, :]
+# end_image = rbatch[1, :, :, :]
+
+# x_0_images = torch.cat([start_image.unsqueeze(0), end_image.unsqueeze(0)]).to(test.device)
+# x_1_solution, x_1_shape = ode_sampler.find_prior_from_image(x_0_images, test.model, test.sde) 
+# x_1_images = ode_sampler.convert_ivp_solution_shape(x_1_solution, x_1_shape).to(test.device)
+
+# comparison_display = torch.cat([x_0_images, x_1_images]).to(test.device)
+
+# grid = torchvision.utils.make_grid(comparison_display, nrow=2)
+# grid = grid.detach().cpu().permute(1, 2, 0)
+
+# plt.imshow(grid)
+# plt.show(block=True)
+
+# start_image_noise = x_1_images[0, :].detach().cpu().numpy()
+# end_image_noise = x_1_images[1, :].detach().cpu().numpy()
+
+# test.interpolate_images(start_image_noise, end_image_noise, method="slerp")
+# sys.exit(0)
+
+# x, y = test.sample_rsde(64)
+
+# np.save("x_060120221258.npy", x.detach().cpu().numpy())
+# np.save("dx_060120221258.npy", y.detach().cpu().numpy())
+
+# sys.exit(0)
 
 # train_loader = load_stl10()
 # it = iter(cycle(train_loader))
@@ -199,23 +308,25 @@ test.load_parameters("../attempt-1/model_states/3/state-epoch-142000.model")
 
 # test.batch_to_prior(batch)
 
-noise = torch.tensor(np.load("z_latent_test.npy"))
+# noise = torch.tensor(np.load("z_latent_test.npy"))
 
-last = noise[-1, :, :, :].unsqueeze(0)
-second_last = noise[-2, :, :, :].unsqueeze(0)
+# last = noise[-1, :, :, :].unsqueeze(0)
+# second_last = noise[-2, :, :, :].unsqueeze(0)
 
-print(last.shape, second_last.shape)
+# print(last.shape, second_last.shape)
 
-data = torch.cat([last, second_last])
-print(data.shape)
+# data = torch.cat([last, second_last])
+# print(data.shape)
 
-data = torch.tensor(data)
-grid = torchvision.utils.make_grid(data, nrow=int(math.sqrt(data.shape[0])))
-grid = grid.detach().cpu().permute(1, 2, 0)
+# data = torch.tensor(data)
+# grid = torchvision.utils.make_grid(data, nrow=int(math.sqrt(data.shape[0])))
+# grid = grid.detach().cpu().permute(1, 2, 0)
 
-plt.imshow(grid)
-plt.show(block=True)
-test.likelihood_test(last, second_last)
+# plt.imshow(grid)
+# plt.show(block=True)
+# test.likelihood_test(last, second_last)
+
+test.interpolate_images(last, second_last)
 
 # print("NS", noise.shape)
 

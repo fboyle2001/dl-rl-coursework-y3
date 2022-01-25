@@ -148,3 +148,8 @@ attempt-0/*
 misc/*
 */snapshots/*
 */runs/*
+*.png
+*.txt
+*.json
+*.mp4
+*.pt

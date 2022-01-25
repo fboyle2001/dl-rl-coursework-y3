@@ -25,7 +25,7 @@ def sample_from_model(model, epoch, batch_size=128, path="./model_states/3/"):
 
     torchvision.utils.save_image(image_grid, f"{path}sample-{epoch}.png")
 
-epoch = 104000
+epoch = 142000
 model_state_path = f"./model_states/3/state-epoch-{epoch}.model"
 print(f"Sampling {model_state_path}")
 device = "cuda:0"
@@ -36,7 +36,11 @@ model.load_state_dict(model_state)
 model.eval()
 sde = oldsde.VESDE()
 
+s = time.time() 
 sample_from_model(model, epoch)
+e = time.time() - s
+
+print(f"Took {e:.3f} seconds")
 
 # x = sde.prior_sampling((32, 3, 48, 48))
 # print(x)

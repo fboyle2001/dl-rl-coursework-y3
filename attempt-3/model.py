@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import math
 import op.up_or_down_sampling as up_or_down_sampling
 from op.ddpm_init import default_init as ddpm_init
-import string
 from collections import namedtuple
 
 class GaussianFourierProjection(nn.Module):
@@ -18,12 +17,6 @@ class GaussianFourierProjection(nn.Module):
     def forward(self, x):
         x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
-
-def activation_lookup(name):
-    if name == "swish":
-        return nn.SiLU()
-    else:
-        raise ValueError
 
 def create_convolution_layer(kernel_size, in_ch, out_ch, init_scale=1):
     padding = 0 if kernel_size == 1 else 1
@@ -52,7 +45,7 @@ class BigGANResidualBlock(nn.Module):
         super().__init__()
         assert time_embedding_dimension is not None, "Time Embedding Dimension cannot be None"
 
-        self.activation_fn = activation_lookup(activation)
+        self.activation_fn = nn.SiLU()
         self.group_norm_initial_layer = nn.GroupNorm(num_groups=min(in_ch // 4, 32), num_channels=in_ch, eps=gn_eps)
 
         self.direction = direction
@@ -148,11 +141,14 @@ class NCSNpp(nn.Module):
         self.activation = nn.SiLU()
         self.device = device
 
+        # The first 3 layers here are used to handle the time sigmas from the SDE
+        # since the model being trained is time-dependant
         self.fourier_embedding_layer = GaussianFourierProjection(embedding_size=num_features, scale=16)
         self.first_time_linear_layer = create_linear_layer(in_ch=num_features * 2, out_ch=num_features * 4)
         self.second_time_linear_layer = create_linear_layer(in_ch=num_features * 4, out_ch=num_features * 4)
         self.initial_convolution_layer = create_convolution_layer(kernel_size=3, in_ch=in_ch, out_ch=num_features)
 
+        # Used to determine whether to save the output or retrieve output for skip connections 
         ModuleMetadata = namedtuple("ModuleMetadata", ["stack_push", "stack_pop"])
 
         self.downsample_order = nn.ModuleList([
@@ -328,23 +324,28 @@ class NCSNpp(nn.Module):
         time_embedding = self.first_time_linear_layer(time_embedding)
         time_embedding = self.second_time_linear_layer(self.activation(time_embedding))
 
-        batch = 2 * batch - 1 # L261 Song et al.
+        # Scaling as suggested by the original paper
+        batch = 2 * batch - 1
         input_skip = batch
         fwd_pass = self.initial_convolution_layer(batch)
         fwd_pass_stack = [fwd_pass]
 
-        for i, (block, metadata) in enumerate(zip(self.downsample_order, self.downsample_metadata)):
+        # Forward pass on the main downsampling and upsampling blocks
+
+        for block, metadata in zip(self.downsample_order, self.downsample_metadata):
             fwd_pass, input_skip = block(fwd_pass, input_skip, time_embedding)
 
+            # Used for the skip connections in the upsampling block
             if metadata.stack_push:
                 fwd_pass_stack.append(fwd_pass)
 
-        for j, block in enumerate(self.intermediate_order):
+        for block in self.intermediate_order:
             fwd_pass, input_skip = block(fwd_pass, input_skip, time_embedding)
 
-        for k, (block, metadata) in enumerate(zip(self.upsample_order, self.upsample_metadata)):
+        for block, metadata in zip(self.upsample_order, self.upsample_metadata):
             upsample_input = fwd_pass
 
+            # Get the inputs for the skip connections
             if metadata.stack_pop:
                 popped = fwd_pass_stack.pop()
                 # Concat on a feature level
@@ -355,9 +356,8 @@ class NCSNpp(nn.Module):
         fwd_pass = self.activation(self.final_group_norm_layer(fwd_pass))
         fwd_pass = self.final_conv_layer(fwd_pass)
         
-        # Not entirely sure what this is doing here, some form of rescaling? on the channels? (batch_size, img_channels)?
+        # Scale according to the time sigmas
         t_shape = t.reshape((batch.shape[0], *([1] * len(batch.shape[1:]))))
-        # print("TS, FWP", t_shape.shape, fwd_pass.shape)
         fwd_pass = fwd_pass / t_shape
 
         return fwd_pass

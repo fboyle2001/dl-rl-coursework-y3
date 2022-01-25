@@ -6,7 +6,7 @@ import time
 
 def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=None, img_channels=3, snr=0.16, steps=1000, verbose=True):
     """
-    Use  Reverse Diffusion for prediction and Lanegvin Dynamics for correction
+    Uses Reverse Diffusion for prediction and Lanegvin Dynamics for correction
     1 step of each per timestep for a default of 1000 iterations
     """
     with torch.no_grad():
@@ -26,11 +26,18 @@ def predictor_corrector_sampling(img_count, img_width, model, sde, prior_sample=
             if i % 100 == 0 and verbose:
                 print(f"Done {steps - i} samples of {steps} time elapsed is {time.time()-start_time:.3f} seconds")
 
+            l_start_time = time.time()
             # Correct
-            x_i, denoised_x_i = compute_langevin_corrector_step(x_i, timesteps[i], sde, model, snr)
-            
+            x_i, denoised_x_i = compute_langevin_corrector_step(x_i_one, timesteps[i], sde, model, snr)
+            l_end_time = time.time() - l_start_time
+
+            r_start_time = time.time()
             # Predict
-            x_i, denoised_x_i = compute_reverse_diff_predictor_step(x_i_one, timesteps[i], timesteps[i + 1], sde, model)
+            x_i, denoised_x_i = compute_reverse_diff_predictor_step(x_i, timesteps[i], timesteps[i + 1], sde, model)
+            r_end_time = time.time() - r_start_time
+
+            print(f"L Predictor took {l_end_time:.5f} s")
+            print(f"R Corrector took {r_end_time:.5f} s")
 
             x_i_one = x_i
             last_denoised = denoised_x_i

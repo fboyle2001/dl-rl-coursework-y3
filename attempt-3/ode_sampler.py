@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import scipy.integrate
 import math
-import sde_sampler 
 
 def probability_flow_sampler(img_count, img_width, model, sde, prior_sample=None, img_channels=3, stability=1e-5, verbose=False):
     """
