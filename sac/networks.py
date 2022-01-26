@@ -51,18 +51,27 @@ def create_fully_connected_network(input_size: int, output_size: int, hidden_lay
     layers = nn.Sequential(*layers).apply(create_initialiser(initialiser))
     return layers
 
-class Critic(nn.Sequential):
+class Critic(nn.Module):
     def __init__(self, input_size, output_size, connected_size=256):
-        super(Critic, self).__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size, connected_size], output_activation=None)
-        )
+        super().__init__()
+        self.layers = create_fully_connected_network(input_size, output_size, [connected_size, connected_size], output_activation=None)
+    
+    def forward(self, states, actions):
+        inp = torch.cat([states, actions], dim=1)
+        return self.layers(inp)
 
-class Actor(nn.Sequential):
+class TwinnedCritics(nn.Module):
     def __init__(self, input_size, output_size, connected_size=256):
-        super(Actor, self).__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size, connected_size], output_activation="tanh")
-        )
-
+        super().__init__()
+        self.Q1 = Critic(input_size, output_size, connected_size)
+        self.Q2 = Critic(input_size, output_size, connected_size)
+    
+    def forward(self, states, actions):
+        q1_out = self.Q1(states, actions)
+        q2_out = self.Q2(states, actions)
+        
+        return q1_out, q2_out
+        
 class SACGaussianPolicy(nn.Module):
     # TODO: Understand what these actually mean
     # Need to rewrite all of this to understand really
@@ -77,16 +86,15 @@ class SACGaussianPolicy(nn.Module):
         self.layers = create_fully_connected_network(input_size, output_size * 2, hidden_layers, output_activation=None)
         print(self.layers)
     
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        out = self.layers(state)
-        mean, log_std = torch.chunk(out, 2, dim=-1)
+    def forward(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        mean, log_std = torch.chunk(self.layers(states), 2, dim=-1)
         log_std = torch.clamp(log_std, min=self.LOG_STD_MIN, max=self.LOG_STD_MAX)
 
         return mean, log_std
     
-    def sample(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def sample(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Gaussian distribution
-        means, log_stds = self.forward(state)
+        means, log_stds = self.forward(states)
         stds = log_stds.exp()
         normals = torch.distributions.Normal(means, stds)
 
