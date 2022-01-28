@@ -2,6 +2,7 @@ from typing import List, Optional, Callable, Tuple
 
 import torch 
 import torch.nn as nn
+import torch.nn.functional as F
 
 import numpy as np
 
@@ -157,42 +158,143 @@ class GaussianActor(nn.Module):
         _, log_prob_actions = self.compute(states)
         return log_prob_actions
 
-class SACGaussianPolicy(nn.Module):
-    # TODO: Understand what these actually mean
-    # Need to rewrite all of this to understand really
-    # https://github.com/ku2482/soft-actor-critic.pytorch/blob/1688d3595817d85c2bcd279bb8ec71221b502899/code/model.py#L17
-    # https://github.com/seungeunrho/minimalRL/blob/7597b9af94ee64536dfd261446d795854f34171b/sac.py#L48
-    eps = 1e-6
-    LOG_STD_MAX = 2
-    LOG_STD_MIN = -20
-
-    def __init__(self, input_size, output_size, hidden_layers=[256, 256]):
+class SingleGaussianDynamics(nn.Module):
+    def __init__(self, state_dims: int, action_dims: int, connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4):
         super().__init__()
-        self.layers = create_fully_connected_network(input_size, output_size * 2, hidden_layers, output_activation=None)
-        print(self.layers)
+
+        hidden = [connected_size for _ in range(hidden_layers + 1)]
+        self.layers = create_fully_connected_network(state_dims + action_dims, 2 * (state_dims + reward_dims), hidden, output_activation=None)
+
+        # Clip the sigmas to prevent too great variation, essentially arbitrary
+        self._log_sigma_lower_bound = torch.FloatTensor([np.log(1e-8)])
+        self._log_sigma_upper_bound = torch.FloatTensor([np.log(8)])
     
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        out = self.layers(state)
-        mean, log_std = torch.chunk(out, 2, dim=-1)
-        log_std = torch.clamp(log_std, min=self.LOG_STD_MIN, max=self.LOG_STD_MAX)
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        merged_input = torch.cat([states, actions], dim=-1)
+        # NN output
+        forward_pass = self.layers(merged_input)
 
-        return mean, log_std
-    
-    def sample(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Gaussian distribution
-        means, log_stds = self.forward(state)
-        stds = log_stds.exp()
-        normals = torch.distributions.Normal(means, stds)
+        # The forward_pass has 2 * A elements so split down the middle
+        # autograd will handle figuring out which ones to backprop on
+        mu, log_sigma = torch.chunk(forward_pass, 2, dim=-1)
 
-        # Sample actions
-        xs = normals.rsample()
-        actions = torch.tanh(xs)
-
-        # Entropies, think I need to remove the minus
-        log_probs = normals.log_prob(xs) - torch.log(1 - actions.pow(2) + self.eps)
-        log_probs = log_probs.sum(1, keepdim=True)
-        entropies = -log_probs.sum(dim=1, keepdim=True)
-
-        return actions * 2, log_probs, torch.tanh(means) * 2
-
+        # Clamp the sigmas, can't do in-place due to autograd
+        log_sigma = log_sigma.clamp(self._log_sigma_lower_bound, self._log_sigma_upper_bound)
         
+        # Map the log sigmas to the real sigmas
+        sigma = log_sigma.exp()
+        
+        # These are now the real parameters for the Normal distribution
+        return mu, sigma
+
+    def predict(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        mu, sigma = self.forward(states, actions)
+
+        # Sample the actions based on the Normal parameters
+        dist = torch.distributions.Normal(mu, sigma)
+        predictions = dist.rsample()
+
+        # Split into next state predictions and reward predictions
+        state_predictions, reward_predictions = predictions[:, :-1], predictions[:, -1].unsqueeze(1)
+        return state_predictions, reward_predictions
+
+class EnsembleGaussianDynamics:
+    def __init__(self, state_dims: int, action_dims: int, ensemble_size: int, connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4, lr: float = 3e-4):
+        self.ensemble_size = ensemble_size
+        self.models = [SingleGaussianDynamics(state_dims, action_dims, connected_size, reward_dims, hidden_layers) for _ in range(ensemble_size)]
+        self.optimisers = [torch.optim.Adam(model.parameters(), lr=lr) for model in self.models]
+        self.losses = [0 for _ in range(ensemble_size)]
+
+    def single_prediction(self, states: torch.Tensor, actions: torch.Tensor, grad: bool, model_index: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        assert model_index is None or 0 <= model_index < self.ensemble_size, f"Invalid model_index {model_index}"
+
+        if model_index is None:
+            model_index = np.random.choice(np.arange(self.ensemble_size))
+        
+        selected_model = self.models[model_index]
+
+        if grad:
+            state_predictions, reward_predictions = selected_model.predict(states, actions)
+        else:
+            with torch.no_grad():
+                state_predictions, reward_predictions = selected_model.predict(states, actions)
+            
+        return state_predictions, reward_predictions
+
+    def weighted_ensemble_prediction(self, states: torch.Tensor, actions: torch.Tensor, weights: Optional[torch.Tensor] = None):
+        if weights is None:
+            weights = F.softmin(torch.FloatTensor(self.losses))
+
+        with torch.no_grad():
+            state_predictions, reward_predictions = self.single_prediction(states, actions, grad=False) * weights[0]
+
+            for model_index in range(1, self.ensemble_size):
+                s, r = self.models[model_index].predict(states, actions) * weights[model_index]
+                state_predictions += s
+                reward_predictions += r
+        
+        return state_predictions, reward_predictions
+
+    def ensemble_prediction(self, states, actions):
+        return self.weighted_ensemble_prediction(states, actions, torch.ones(self.ensemble_size))
+
+    def train(self, states: torch.Tensor, actions: torch.Tensor, true_next_states: torch.Tensor, true_next_rewards: torch.Tensor) -> None:
+        eval_masks = [np.random.choice(states.shape[0], size=int(0.2 * states.shape[0])) for _ in range(len(self.models))]
+        # print("EM", eval_mask[0].shape)
+        # print(true_next_states.shape, true_next_rewards.shape)
+
+        steps_since_last_improvement = [0 for _ in range(len(self.models))]
+        best_eval_losses = [None for _ in range(len(self.models))]
+        improvement_threshold = 0.01
+        steps_without_improvement = 5
+        done = False
+
+        while not done:
+            done = True
+            print(steps_since_last_improvement)
+            
+            for model_index in range(self.ensemble_size):
+                if steps_since_last_improvement[model_index] >= steps_without_improvement:
+                    continue
+                    
+                done = False
+                eval_mask = eval_masks[model_index]
+
+                training_mask = np.ones(states.shape[0], dtype=bool)
+                training_mask[eval_mask] = False
+                training_states, training_actions = states[training_mask], actions[training_mask]
+
+                merged_truth = torch.cat([true_next_states[training_mask], true_next_rewards[training_mask]], dim=-1)
+
+                state_predictions, reward_predictions = self.single_prediction(training_states, training_actions, grad=True)
+                merged_predict = torch.cat([state_predictions, reward_predictions], dim=-1)
+                loss = F.mse_loss(merged_predict, merged_truth)
+
+                optimiser = self.optimisers[model_index]
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
+
+                with torch.no_grad():
+                    eval_merged_truth = torch.cat([true_next_states[eval_mask], true_next_rewards[eval_mask]], dim=-1)
+                    eval_states, eval_actions = states[eval_mask], actions[eval_mask]
+                    eval_pred_states, eval_pred_rewards = self.single_prediction(eval_states, eval_actions, grad=True)
+                    eval_merged_predict = torch.cat([eval_pred_states, eval_pred_rewards], dim=-1)
+                    eval_loss = F.mse_loss(eval_merged_predict, eval_merged_truth)
+
+                    if best_eval_losses[model_index] is None:
+                        best_eval_losses[model_index] = eval_loss.item() # type: ignore
+                    else:
+                        eval_ratio = (best_eval_losses[model_index] - eval_loss) / best_eval_losses[model_index]
+
+                        if eval_ratio < improvement_threshold:
+                            steps_since_last_improvement[model_index] += 1
+                        else:
+                            steps_since_last_improvement[model_index] = 0
+                        
+                        if eval_loss < best_eval_losses[model_index]:
+                            best_eval_losses[model_index] = eval_loss.item() # type: ignore
+        
+        self.losses = best_eval_losses
+
+                
