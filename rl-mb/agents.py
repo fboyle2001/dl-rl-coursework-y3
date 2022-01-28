@@ -518,13 +518,15 @@ class StandardMBPOAgent(RLAgent):
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 20,
                         warmup_steps: int = 10000, target_update_interval: int = 1, ensemble_size: int = 7,
-                        model_horizon: int = 1):
+                        rollouts_per_step: int = 400, dynamics_train_freq: int = 250, model_samples_per_env_sample = 20,
+                        retained_step_rollouts: int = 1):
         """
         MBPO with SAC Implementation
         """
         super().__init__("MBPO", env_name, device, video_every)
 
         self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
+        self.model_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, retained_step_rollouts * rollouts_per_step, self.device)
 
         # Critics predicts the reward of taking action A from state S
         self.critic_1 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
@@ -562,7 +564,10 @@ class StandardMBPOAgent(RLAgent):
         self.target_update_interval = target_update_interval
         self.replay_batch_size = replay_batch_size
         self.warmup_steps = warmup_steps
-        self.gradient_steps = 1 ######TODO:::NOT 1
+        self.gradient_steps = gradient_steps ######TODO:::NOT 1
+        self.dynamics_train_freq = dynamics_train_freq
+        self.rollouts_per_step = rollouts_per_step
+        self.env_ratio = 1 / model_samples_per_env_sample
     
     def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
         state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
@@ -640,46 +645,63 @@ class StandardMBPOAgent(RLAgent):
         # * current alpha
         # Maps to Eq 7
 
-        actor_actions, actor_probs = self.actor.compute(buffer_sample.states)
-        real_input = torch.cat([buffer_sample.states, actor_actions], dim=-1)
+        q1_avg = 0
+        q2_avg = 0
+        al_avg = 0
+                    
+        for grad_step in range(self.gradient_steps):
+            real_sample_count = int(self.env_ratio * self.replay_batch_size)
+            real_sample_indices = np.random.choice(self.replay_batch_size, real_sample_count)
+            fake_sample_count = self.replay_batch_size - real_sample_count
 
-        # See what the critics think to the actor's prediction of the next action
-        real_Q1 = self.critic_1(real_input)
-        real_Q2 = self.critic_2(real_input)
-        min_Q = torch.min(real_Q1, real_Q2)
+            buffer_fake_samples = self.model_buffer.sample_buffer(fake_sample_count)
 
-        self._writer.add_scalar('loss/mean_Q1', real_Q1.detach().mean().item(), self._steps)
-        self._writer.add_scalar('loss/mean_Q2', real_Q2.detach().mean().item(), self._steps)
+            mixed_states = torch.cat([buffer_sample.states[real_sample_indices], buffer_fake_samples.states], dim=0)
 
-        # See Eq 7 
-        actor_loss = (self.alpha * actor_probs - min_Q).mean()
-        self._writer.add_scalar('loss/actor', actor_loss.detach().item(), self._steps)
+            actor_actions, actor_probs = self.actor.compute(mixed_states)
+            real_input = torch.cat([mixed_states, actor_actions], dim=-1)
 
-        self.opt_actor.zero_grad()
-        actor_loss.backward()
-        self.opt_actor.step()
+            # See what the critics think to the actor's prediction of the next action
+            real_Q1 = self.critic_1(real_input)
+            real_Q2 = self.critic_2(real_input)
+            min_Q = torch.min(real_Q1, real_Q2)
 
-        # Actor updated, now update the temperature (alpha), need:
-        # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
-        # * log(a'_t | s_t) from policy
-        # * target entropy H
-        # * current alpha
+            q1_avg += real_Q1.detach().mean().item()
+            q2_avg += real_Q2.detach().mean().item()
 
-        # No need to backprop on the target or log probabilities since
-        # we want to isolate the alpha update here
-        alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
-        alpha_loss = alpha_loss.mean()
-        self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
+            # See Eq 7 
+            actor_loss = (self.alpha.detach() * actor_probs - min_Q).mean()
+            al_avg += actor_loss.detach().item()
 
-        self.opt_alpha.zero_grad()
-        alpha_loss.backward()
-        self.opt_alpha.step()
+            self.opt_actor.zero_grad()
+            actor_loss.backward()
+            self.opt_actor.step()
 
-        # Make sure to update alpha now we've updated log_alpha
-        self.alpha = self.log_alpha.exp()
+            if grad_step == self.gradient_steps - 1:
+                # Actor updated, now update the temperature (alpha), need:
+                # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
+                # * log(a'_t | s_t) from policy
+                # * target entropy H
+                # * current alpha
 
-        self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
+                # No need to backprop on the target or log probabilities since
+                # we want to isolate the alpha update here
+                alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
+                alpha_loss = alpha_loss.mean()
+                self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
 
+                self.opt_alpha.zero_grad()
+                alpha_loss.backward()
+                self.opt_alpha.step()
+
+                # Make sure to update alpha now we've updated log_alpha
+                self.alpha = self.log_alpha.exp()
+
+                self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
+        
+        self._writer.add_scalar('loss/actor', al_avg / self.gradient_steps, self._steps)
+        self._writer.add_scalar('loss/mean_Q1', q1_avg / self.gradient_steps, self._steps)
+        self._writer.add_scalar('loss/mean_Q2', q2_avg / self.gradient_steps, self._steps)
         # Update the frozen critics
         self.update_target_parameters()
 
@@ -692,45 +714,49 @@ class StandardMBPOAgent(RLAgent):
         for param, target_param in zip(self.critic_2.parameters(), self.target_critic_2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-    def run(self) -> None:
-        should_train = False
+    def perform_rollouts(self):
+        rollout_buffer = self.replay_buffer.sample_buffer(self.rollouts_per_step)
+        predicted_actions = torch.FloatTensor(self.sample_regular_action(rollout_buffer.states)).to(self.device)
+        rollout_next_states, rollout_next_rewards = self.dynamics.batch_predict(rollout_buffer.states, predicted_actions)
+        self.model_buffer.store_replays(rollout_buffer.states, predicted_actions.detach().cpu().numpy(), rollout_next_rewards.detach().cpu().numpy(),
+                                        rollout_next_states.detach().cpu().numpy(), np.zeros(shape=rollout_buffer.states.shape[0], dtype=bool))
 
+    def run(self) -> None:
         while self._episodes < self._max_episodes:
             self._episodes += 1
             done = False
             state = self.env.reset()
             self._episode_steps = 0
             episode_reward = 0
-
-            if should_train:
-                buffer_sample = self.replay_buffer.get_all_replays()
-                self.log(f"Training dynamics on {buffer_sample.states.shape[0]} replays")
-                self.dynamics.train(buffer_sample.states, buffer_sample.actions, buffer_sample.next_states, buffer_sample.rewards.unsqueeze(1))
-                self.log(f"Trained dynamics, losses: {self.dynamics.losses}")
-
-                for i, loss in enumerate(self.dynamics.losses):
-                    self._writer.add_scalar(f"dynamics/{i}", loss, self._steps)
-
-            should_train = False
             
-            while not done: 
+            while not done:
                 if self._steps < self.warmup_steps:
                     action = self.env.action_space.sample()
                 else:
                     action = self.sample_regular_action(state)
             
-                for _ in range(self.gradient_steps):
-                    self.train_policy()
-                
                 next_state, reward, done, _ = self.env.step(action)
+                self.replay_buffer.store_replay(state, action, reward, next_state, done)
+                
                 self._steps += 1
                 self._episode_steps += 1
                 episode_reward += reward
 
-                if self._steps % 5000 == 0:
-                    should_train = True
+                # Train the dynamics model
+                if self._steps % self.dynamics_train_freq == 0:
+                    buffer_sample = self.replay_buffer.get_all_replays()
+                    self.log(f"Training dynamics on {buffer_sample.states.shape[0]} replays")
+                    self.dynamics.train(buffer_sample.states, buffer_sample.actions, buffer_sample.next_states, buffer_sample.rewards.unsqueeze(1))
+                    # self.log(f"Trained dynamics, losses: {self.dynamics.losses}")
 
-                self.replay_buffer.store_replay(state, action, reward, next_state, done)
+                    for i, loss in enumerate(self.dynamics.losses):
+                        self._writer.add_scalar(f"dynamics/{i}", loss, self._steps)
+
+                # Perform model rollouts
+                if self.replay_buffer.count >= 1000:
+                    self.perform_rollouts()
+                    self.train_policy()
+
                 state = next_state 
             
             self._writer.add_scalar("stats/reward", episode_reward, self.episodes)

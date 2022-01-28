@@ -205,7 +205,7 @@ class EnsembleGaussianDynamics:
         self.optimisers = [torch.optim.Adam(model.parameters(), lr=lr) for model in self.models]
         self.losses = [0 for _ in range(ensemble_size)]
 
-    def single_prediction(self, states: torch.Tensor, actions: torch.Tensor, grad: bool, model_index: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def single_predict(self, states: torch.Tensor, actions: torch.Tensor, grad: bool, model_index: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         assert model_index is None or 0 <= model_index < self.ensemble_size, f"Invalid model_index {model_index}"
 
         if model_index is None:
@@ -221,12 +221,12 @@ class EnsembleGaussianDynamics:
             
         return state_predictions, reward_predictions
 
-    def weighted_ensemble_prediction(self, states: torch.Tensor, actions: torch.Tensor, weights: Optional[torch.Tensor] = None):
+    def weighted_ensemble_predict(self, states: torch.Tensor, actions: torch.Tensor, weights: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         if weights is None:
             weights = F.softmin(torch.FloatTensor(self.losses))
 
         with torch.no_grad():
-            state_predictions, reward_predictions = self.single_prediction(states, actions, grad=False) * weights[0]
+            state_predictions, reward_predictions = self.single_predict(states, actions, grad=False) * weights[0]
 
             for model_index in range(1, self.ensemble_size):
                 s, r = self.models[model_index].predict(states, actions) * weights[model_index]
@@ -235,13 +235,36 @@ class EnsembleGaussianDynamics:
         
         return state_predictions, reward_predictions
 
-    def ensemble_prediction(self, states, actions):
-        return self.weighted_ensemble_prediction(states, actions, torch.ones(self.ensemble_size))
+    def ensemble_predict(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.weighted_ensemble_predict(states, actions, torch.ones(self.ensemble_size))
+
+    def batch_predict(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        indices = np.arange(states.shape[0])
+        np.random.shuffle(indices)
+        spaced_indices = np.linspace(0, states.shape[0], num=self.ensemble_size + 1, dtype=np.uint32)
+
+        state_predictions = None
+        reward_predictions = None
+
+        for model_index in range(self.ensemble_size):
+            batch_indices = indices[spaced_indices[model_index] : spaced_indices[model_index + 1]]
+            batch_states = states[batch_indices]
+            batch_actions = actions[batch_indices]
+
+            batch_state_predictions, batch_reward_predictions = self.single_predict(batch_states, batch_actions, grad=False, model_index=model_index)
+
+            if state_predictions is None or reward_predictions is None:
+                state_predictions = batch_state_predictions
+                reward_predictions = batch_reward_predictions
+            else:
+                state_predictions = torch.cat([state_predictions, batch_state_predictions], dim=0)
+                reward_predictions = torch.cat([reward_predictions, batch_reward_predictions], dim=0)
+        
+        assert state_predictions is not None and reward_predictions is not None
+        return state_predictions, reward_predictions
 
     def train(self, states: torch.Tensor, actions: torch.Tensor, true_next_states: torch.Tensor, true_next_rewards: torch.Tensor) -> None:
         eval_masks = [np.random.choice(states.shape[0], size=int(0.2 * states.shape[0])) for _ in range(len(self.models))]
-        # print("EM", eval_mask[0].shape)
-        # print(true_next_states.shape, true_next_rewards.shape)
 
         steps_since_last_improvement = [0 for _ in range(len(self.models))]
         best_eval_losses = [None for _ in range(len(self.models))]
@@ -251,7 +274,6 @@ class EnsembleGaussianDynamics:
 
         while not done:
             done = True
-            print(steps_since_last_improvement)
             
             for model_index in range(self.ensemble_size):
                 if steps_since_last_improvement[model_index] >= steps_without_improvement:
@@ -266,7 +288,7 @@ class EnsembleGaussianDynamics:
 
                 merged_truth = torch.cat([true_next_states[training_mask], true_next_rewards[training_mask]], dim=-1)
 
-                state_predictions, reward_predictions = self.single_prediction(training_states, training_actions, grad=True)
+                state_predictions, reward_predictions = self.single_predict(training_states, training_actions, grad=True)
                 merged_predict = torch.cat([state_predictions, reward_predictions], dim=-1)
                 loss = F.mse_loss(merged_predict, merged_truth)
 
@@ -278,7 +300,7 @@ class EnsembleGaussianDynamics:
                 with torch.no_grad():
                     eval_merged_truth = torch.cat([true_next_states[eval_mask], true_next_rewards[eval_mask]], dim=-1)
                     eval_states, eval_actions = states[eval_mask], actions[eval_mask]
-                    eval_pred_states, eval_pred_rewards = self.single_prediction(eval_states, eval_actions, grad=True)
+                    eval_pred_states, eval_pred_rewards = self.single_predict(eval_states, eval_actions, grad=True)
                     eval_merged_predict = torch.cat([eval_pred_states, eval_pred_rewards], dim=-1)
                     eval_loss = F.mse_loss(eval_merged_predict, eval_merged_truth)
 
