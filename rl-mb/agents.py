@@ -1,4 +1,3 @@
-import re
 from typing import Any, Dict, Optional, Union, Callable
 import abc
 import time
@@ -12,14 +11,11 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import copy
 import buffers
 import networks
-import utils
-from dotmap import DotMap
 import random
 
 class RLAgent(abc.ABC):
     def __init__(self, agent_name: str, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                     max_episodes: int = 50000, log_to_file: bool = True, log_to_screen: bool = True, seed: int = 42):
-        
         self._agent_name = agent_name
         self.env = gym.make(env_name)
         self._action_dim = self.env.action_space.shape[0] # type: ignore
@@ -89,7 +85,7 @@ class RLAgent(abc.ABC):
             self._log_file.flush()
 
     @abc.abstractmethod
-    def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
+    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
         """
         Sample an action for use in evaluation of the policy
         e.g. without any exploration noise added
@@ -97,7 +93,7 @@ class RLAgent(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def sample_regular_action(self, states: np.ndarray) -> np.ndarray:
+    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
         """
         Sample an action for use during training 
         e.g. with exploration noise added
@@ -212,12 +208,11 @@ class StandardTD3Agent(RLAgent):
             self._writer.add_scalar("stats/reward", episode_reward, self.episodes)
             self.log(f"Episode Reward: {episode_reward}")
     
-    def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
-        np_state = states.reshape(1, -1)
-        state = torch.FloatTensor(np_state).to(self.device)
-        return self.actor(state).cpu().data.numpy().flatten()
+    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.reshape(1, -1)
+        return self.actor(states).cpu().data.numpy().flatten()
 
-    def sample_regular_action(self, states: np.ndarray) -> np.ndarray:
+    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
         action = self.sample_evaluation_action(states)
         action = (action + np.random.normal(0, self.exploration_noise, size=self._action_dim)).clip(-1, 1)
         return action
@@ -288,7 +283,7 @@ class StandardTD3Agent(RLAgent):
         for param, target_param in zip(self.actor.parameters(), self.target_actor.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-class StandardSAC(RLAgent):
+class StandardSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 1,
@@ -306,7 +301,7 @@ class StandardSAC(RLAgent):
 
         # Actor predicts the action to take based on the current state
         # Though in SAC it actually predicts the distribution of actions
-        self.actor = networks.GaussianActor(self._state_dim, self._action_dim)
+        self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
 
         # Establish the target networks
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
@@ -318,7 +313,7 @@ class StandardSAC(RLAgent):
 
         # Alpha can get very close to 0 so for the same reason as in
         # the GaussianActor we optimise ln(alpha) instead for numerical stability
-        self.log_alpha = torch.zeros(1, requires_grad=True).to(self.device)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha = self.log_alpha.exp() # Or 0.2?
 
         # Optimisers
@@ -335,19 +330,19 @@ class StandardSAC(RLAgent):
         self.warmup_steps = warmup_steps
         self.gradient_steps = gradient_steps
     
-    def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
-        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
+    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=False)
+            action = self.actor.compute_actions(states, stochastic=False)
 
         return action.detach().cpu().numpy()[0]
 
-    def sample_regular_action(self, states: np.ndarray) -> np.ndarray:
-        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
+    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=True)
+            action = self.actor.compute_actions(states, stochastic=True)
 
         return action.detach().cpu().numpy()[0]
 
@@ -475,7 +470,7 @@ class StandardSAC(RLAgent):
                 if self._steps < self.warmup_steps:
                     action = self.env.action_space.sample()
                 else:
-                    action = self.sample_regular_action(state)
+                    action = self.sample_regular_action(torch.tensor(state, device=self.device))
             
                 for _ in range(self.gradient_steps):
                     self.train_policy()
@@ -502,6 +497,7 @@ class StandardSAC(RLAgent):
                     done = False
 
                     while not done:
+                        state = torch.tensor(state, device=self.device)
                         action = self.sample_evaluation_action(state)
                         next_state, reward, done, _ = self.env.step(action)
                         ep_reward += reward
@@ -517,8 +513,8 @@ class StandardMBPOAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 20,
-                        warmup_steps: int = 10000, target_update_interval: int = 1, ensemble_size: int = 7,
-                        rollouts_per_step: int = 400, dynamics_train_freq: int = 250, model_samples_per_env_sample = 20,
+                        warmup_steps: int = 3000, target_update_interval: int = 1, ensemble_size: int = 7,
+                        rollouts_per_step: int = 100000, dynamics_train_freq: int = 250, model_samples_per_env_sample = 20,
                         retained_step_rollouts: int = 1):
         """
         MBPO with SAC Implementation
@@ -534,7 +530,7 @@ class StandardMBPOAgent(RLAgent):
 
         # Actor predicts the action to take based on the current state
         # Though in SAC it actually predicts the distribution of actions
-        self.actor = networks.GaussianActor(self._state_dim, self._action_dim)
+        self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
 
         # Establish the target networks
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
@@ -546,7 +542,7 @@ class StandardMBPOAgent(RLAgent):
 
         # Alpha can get very close to 0 so for the same reason as in
         # the GaussianActor we optimise ln(alpha) instead for numerical stability
-        self.log_alpha = torch.zeros(1, requires_grad=True).to(self.device)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha = self.log_alpha.exp() # Or 0.2?
 
         # Optimisers
@@ -556,7 +552,7 @@ class StandardMBPOAgent(RLAgent):
         self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=lr)
         
         # Dynamics model
-        self.dynamics = networks.EnsembleGaussianDynamics(self._state_dim, self._action_dim, ensemble_size, lr=lr)
+        self.dynamics = networks.EnsembleGaussianDynamics(self._state_dim, self._action_dim, ensemble_size, self.device, lr=lr)
 
         # Hyperparameters
         self.gamma = gamma 
@@ -569,19 +565,19 @@ class StandardMBPOAgent(RLAgent):
         self.rollouts_per_step = rollouts_per_step
         self.env_ratio = 1 / model_samples_per_env_sample
     
-    def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
-        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
+    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=False)
+            action = self.actor.compute_actions(states, stochastic=False)
 
         return action.detach().cpu().numpy()[0]
 
-    def sample_regular_action(self, states: np.ndarray) -> np.ndarray:
-        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
+    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=True)
+            action = self.actor.compute_actions(states, stochastic=True)
 
         return action.detach().cpu().numpy()[0]
 
@@ -644,64 +640,54 @@ class StandardMBPOAgent(RLAgent):
         # * log(a'_t | s_t) from policy
         # * current alpha
         # Maps to Eq 7
-
-        q1_avg = 0
-        q2_avg = 0
-        al_avg = 0
                     
-        for grad_step in range(self.gradient_steps):
-            real_sample_count = int(self.env_ratio * self.replay_batch_size)
-            real_sample_indices = np.random.choice(self.replay_batch_size, real_sample_count)
-            fake_sample_count = self.replay_batch_size - real_sample_count
+        real_sample_count = int(self.env_ratio * self.replay_batch_size)
+        real_sample_indices = np.random.choice(self.replay_batch_size, real_sample_count)
+        fake_sample_count = self.replay_batch_size - real_sample_count
 
-            buffer_fake_samples = self.model_buffer.sample_buffer(fake_sample_count)
+        buffer_fake_samples = self.model_buffer.sample_buffer(fake_sample_count)
 
-            mixed_states = torch.cat([buffer_sample.states[real_sample_indices], buffer_fake_samples.states], dim=0)
+        mixed_states = torch.cat([buffer_sample.states[real_sample_indices], buffer_fake_samples.states], dim=0)
 
-            actor_actions, actor_probs = self.actor.compute(mixed_states)
-            real_input = torch.cat([mixed_states, actor_actions], dim=-1)
+        actor_actions, actor_probs = self.actor.compute(mixed_states)
+        real_input = torch.cat([mixed_states, actor_actions], dim=-1)
 
-            # See what the critics think to the actor's prediction of the next action
-            real_Q1 = self.critic_1(real_input)
-            real_Q2 = self.critic_2(real_input)
-            min_Q = torch.min(real_Q1, real_Q2)
+        # See what the critics think to the actor's prediction of the next action
+        real_Q1 = self.critic_1(real_input)
+        real_Q2 = self.critic_2(real_input)
+        min_Q = torch.min(real_Q1, real_Q2)
 
-            q1_avg += real_Q1.detach().mean().item()
-            q2_avg += real_Q2.detach().mean().item()
+        # See Eq 7 
+        actor_loss = (self.alpha.detach() * actor_probs - min_Q).mean()
 
-            # See Eq 7 
-            actor_loss = (self.alpha.detach() * actor_probs - min_Q).mean()
-            al_avg += actor_loss.detach().item()
+        self.opt_actor.zero_grad()
+        actor_loss.backward()
+        self.opt_actor.step()
 
-            self.opt_actor.zero_grad()
-            actor_loss.backward()
-            self.opt_actor.step()
+        # Actor updated, now update the temperature (alpha), need:
+        # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
+        # * log(a'_t | s_t) from policy
+        # * target entropy H
+        # * current alpha
 
-            if grad_step == self.gradient_steps - 1:
-                # Actor updated, now update the temperature (alpha), need:
-                # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
-                # * log(a'_t | s_t) from policy
-                # * target entropy H
-                # * current alpha
+        # No need to backprop on the target or log probabilities since
+        # we want to isolate the alpha update here
+        alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
+        alpha_loss = alpha_loss.mean()
+        self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
 
-                # No need to backprop on the target or log probabilities since
-                # we want to isolate the alpha update here
-                alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
-                alpha_loss = alpha_loss.mean()
-                self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
+        self.opt_alpha.zero_grad()
+        alpha_loss.backward()
+        self.opt_alpha.step()
 
-                self.opt_alpha.zero_grad()
-                alpha_loss.backward()
-                self.opt_alpha.step()
+        # Make sure to update alpha now we've updated log_alpha
+        self.alpha = self.log_alpha.exp()
 
-                # Make sure to update alpha now we've updated log_alpha
-                self.alpha = self.log_alpha.exp()
-
-                self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
+        self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
         
-        self._writer.add_scalar('loss/actor', al_avg / self.gradient_steps, self._steps)
-        self._writer.add_scalar('loss/mean_Q1', q1_avg / self.gradient_steps, self._steps)
-        self._writer.add_scalar('loss/mean_Q2', q2_avg / self.gradient_steps, self._steps)
+        self._writer.add_scalar('loss/actor', actor_loss.detach().cpu().item(), self._steps)
+        self._writer.add_scalar('loss/mean_Q1', real_Q1.detach().cpu().mean().item(), self._steps)
+        self._writer.add_scalar('loss/mean_Q2', real_Q2.detach().cpu().mean().item(), self._steps)
         # Update the frozen critics
         self.update_target_parameters()
 
@@ -716,9 +702,9 @@ class StandardMBPOAgent(RLAgent):
 
     def perform_rollouts(self):
         rollout_buffer = self.replay_buffer.sample_buffer(self.rollouts_per_step)
-        predicted_actions = torch.FloatTensor(self.sample_regular_action(rollout_buffer.states)).to(self.device)
+        predicted_actions = torch.tensor(self.sample_regular_action(rollout_buffer.states), device=self.device)
         rollout_next_states, rollout_next_rewards = self.dynamics.batch_predict(rollout_buffer.states, predicted_actions)
-        self.model_buffer.store_replays(rollout_buffer.states, predicted_actions.detach().cpu().numpy(), rollout_next_rewards.detach().cpu().numpy(),
+        self.model_buffer.store_replays(rollout_buffer.states.detach().cpu().numpy(), predicted_actions.detach().cpu().numpy(), rollout_next_rewards.detach().cpu().numpy(),
                                         rollout_next_states.detach().cpu().numpy(), np.zeros(shape=rollout_buffer.states.shape[0], dtype=bool))
 
     def run(self) -> None:
@@ -733,7 +719,7 @@ class StandardMBPOAgent(RLAgent):
                 if self._steps < self.warmup_steps:
                     action = self.env.action_space.sample()
                 else:
-                    action = self.sample_regular_action(state)
+                    action = self.sample_regular_action(torch.tensor(state, device=self.device))
             
                 next_state, reward, done, _ = self.env.step(action)
                 self.replay_buffer.store_replay(state, action, reward, next_state, done)
@@ -747,14 +733,21 @@ class StandardMBPOAgent(RLAgent):
                     buffer_sample = self.replay_buffer.get_all_replays()
                     self.log(f"Training dynamics on {buffer_sample.states.shape[0]} replays")
                     self.dynamics.train(buffer_sample.states, buffer_sample.actions, buffer_sample.next_states, buffer_sample.rewards.unsqueeze(1))
-                    # self.log(f"Trained dynamics, losses: {self.dynamics.losses}")
+                    self.log(f"Trained dynamics, losses: {self.dynamics.losses}")
 
                     for i, loss in enumerate(self.dynamics.losses):
                         self._writer.add_scalar(f"dynamics/{i}", loss, self._steps)
 
-                # Perform model rollouts
-                if self.replay_buffer.count >= 1000:
+                    # Perform rollouts on the new dynamics model
                     self.perform_rollouts()
+
+                # Don't start training the policy until we have sampled the random steps
+                # seems to break the dynamics model if this is on?? 
+                # if self._steps < self.warmup_steps:
+                #     continue
+
+                # Train the policy
+                for _ in range(self.gradient_steps):
                     self.train_policy()
 
                 state = next_state 
@@ -773,6 +766,7 @@ class StandardMBPOAgent(RLAgent):
                     done = False
 
                     while not done:
+                        state = torch.tensor(state, device=self.device)
                         action = self.sample_evaluation_action(state)
                         next_state, reward, done, _ = self.env.step(action)
                         ep_reward += reward
@@ -784,5 +778,9 @@ class StandardMBPOAgent(RLAgent):
                 self._writer.add_scalar("stats/eval_reward", avg_reward, self.episodes)
                 self.log(f"[EVAL] Average reward over {eval_episodes} was {avg_reward}")
 
-a = StandardMBPOAgent("BipedalWalker-v3", "cpu", None)
-a.run()
+
+AGENT_MAP = {
+    "MBPO": StandardMBPOAgent,
+    "SAC": StandardSACAgent,
+    "TD3": StandardTD3Agent
+}

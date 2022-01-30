@@ -1,4 +1,4 @@
-from typing import List, Optional, Callable, Tuple
+from typing import List, Optional, Callable, Tuple, Union
 
 import torch 
 import torch.nn as nn
@@ -64,7 +64,8 @@ class Actor(nn.Sequential):
         )
 
 class GaussianActor(nn.Module):
-    def __init__(self, state_dims: int, action_dims: int, connected_size: int = 256, sigma_upper_bound: float = 8, action_scale: float = 1, action_offset: float = 0):
+    def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device], connected_size: int = 256,
+                 sigma_upper_bound: float = 8, action_scale: float = 1, action_offset: float = 0):
         """
         The Gaussian Actor takes in a state and predicts the parameters of
         a Normal distribution for each dimension in the action dimensions.
@@ -76,6 +77,7 @@ class GaussianActor(nn.Module):
         for the stability
         """
         super().__init__()
+        self.device = device
 
         self.action_scale = action_scale
         self.action_offset = action_offset
@@ -89,13 +91,10 @@ class GaussianActor(nn.Module):
         self._epsilon = 1e-8
 
         # Clip the sigmas to prevent too great variation, essentially arbitrary
-        self._log_sigma_lower_bound = torch.FloatTensor([np.log(self._epsilon)])
-        self._log_sigma_upper_bound = torch.FloatTensor([np.log(8)])
+        self._log_sigma_lower_bound = torch.tensor([np.log(self._epsilon)], device=self.device)
+        self._log_sigma_upper_bound = torch.tensor([np.log(sigma_upper_bound)], device=self.device)
 
-        print(self._log_sigma_lower_bound)
-        print(self._log_sigma_upper_bound)
-
-        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size, connected_size], output_activation=None)
+        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size, connected_size], output_activation=None).to(self.device)
 
     def forward(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # NN output
@@ -159,15 +158,17 @@ class GaussianActor(nn.Module):
         return log_prob_actions
 
 class SingleGaussianDynamics(nn.Module):
-    def __init__(self, state_dims: int, action_dims: int, connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4):
+    def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device],
+                 connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4):
         super().__init__()
+        self.device = device
 
         hidden = [connected_size for _ in range(hidden_layers + 1)]
         self.layers = create_fully_connected_network(state_dims + action_dims, 2 * (state_dims + reward_dims), hidden, output_activation=None)
 
         # Clip the sigmas to prevent too great variation, essentially arbitrary
-        self._log_sigma_lower_bound = torch.FloatTensor([np.log(1e-8)])
-        self._log_sigma_upper_bound = torch.FloatTensor([np.log(8)])
+        self._log_sigma_lower_bound = torch.tensor([np.log(1e-8)], device=self.device)
+        self._log_sigma_upper_bound = torch.tensor([np.log(8)], device=self.device)
     
     def forward(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         merged_input = torch.cat([states, actions], dim=-1)
@@ -199,9 +200,11 @@ class SingleGaussianDynamics(nn.Module):
         return state_predictions, reward_predictions
 
 class EnsembleGaussianDynamics:
-    def __init__(self, state_dims: int, action_dims: int, ensemble_size: int, connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4, lr: float = 3e-4):
+    def __init__(self, state_dims: int, action_dims: int, ensemble_size: int, device: Union[str, torch.device],
+                 connected_size: int = 256, reward_dims: int = 1, hidden_layers: int = 4, lr: float = 3e-4):
+        self.device = device
         self.ensemble_size = ensemble_size
-        self.models = [SingleGaussianDynamics(state_dims, action_dims, connected_size, reward_dims, hidden_layers) for _ in range(ensemble_size)]
+        self.models = [SingleGaussianDynamics(state_dims, action_dims, device, connected_size, reward_dims, hidden_layers).to(self.device) for _ in range(ensemble_size)]
         self.optimisers = [torch.optim.Adam(model.parameters(), lr=lr) for model in self.models]
         self.losses = [0 for _ in range(ensemble_size)]
 
@@ -223,7 +226,7 @@ class EnsembleGaussianDynamics:
 
     def weighted_ensemble_predict(self, states: torch.Tensor, actions: torch.Tensor, weights: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         if weights is None:
-            weights = F.softmin(torch.FloatTensor(self.losses))
+            weights = F.softmin(torch.tensor(self.losses))
 
         with torch.no_grad():
             state_predictions, reward_predictions = self.single_predict(states, actions, grad=False) * weights[0]
@@ -285,17 +288,19 @@ class EnsembleGaussianDynamics:
                 training_mask = np.ones(states.shape[0], dtype=bool)
                 training_mask[eval_mask] = False
                 training_states, training_actions = states[training_mask], actions[training_mask]
+                training_true_states, training_true_rewards = true_next_states[training_mask], true_next_rewards[training_mask]
 
-                merged_truth = torch.cat([true_next_states[training_mask], true_next_rewards[training_mask]], dim=-1)
+                for batch_start in range(0, training_states.shape[0], 256):
+                    merged_truth = torch.cat([training_true_states[batch_start : batch_start + 256], training_true_rewards[batch_start : batch_start + 256]], dim=-1)
 
-                state_predictions, reward_predictions = self.single_predict(training_states, training_actions, grad=True)
-                merged_predict = torch.cat([state_predictions, reward_predictions], dim=-1)
-                loss = F.mse_loss(merged_predict, merged_truth)
+                    state_predictions, reward_predictions = self.single_predict(training_states[batch_start : batch_start + 256], training_actions[batch_start : batch_start + 256], grad=True)
+                    merged_predict = torch.cat([state_predictions, reward_predictions], dim=-1)
+                    loss = F.mse_loss(merged_predict, merged_truth)
 
-                optimiser = self.optimisers[model_index]
-                optimiser.zero_grad()
-                loss.backward()
-                optimiser.step()
+                    optimiser = self.optimisers[model_index]
+                    optimiser.zero_grad()
+                    loss.backward()
+                    optimiser.step()
 
                 with torch.no_grad():
                     eval_merged_truth = torch.cat([true_next_states[eval_mask], true_next_rewards[eval_mask]], dim=-1)
