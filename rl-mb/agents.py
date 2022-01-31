@@ -20,6 +20,7 @@ class RLAgent(abc.ABC):
         self.env = gym.make(env_name)
         self._action_dim = self.env.action_space.shape[0] # type: ignore
         self._state_dim = self.env.observation_space.shape[0] # type: ignore
+        self._max_action = float(self.env.action_space.high[0]) # type: ignore
 
         self._seed = seed
         torch.manual_seed(self._seed)
@@ -61,6 +62,8 @@ class RLAgent(abc.ABC):
         self._episode_steps = 0
         self._max_episodes = max_episodes
         self._reward_log = []
+        
+        self.log(f"Action dim: {self._action_dim}, State dim: {self._state_dim}, Max Action: {self._max_action}")
 
     @property
     def steps(self) -> int:
@@ -116,7 +119,7 @@ class StandardTD3Agent(RLAgent):
                     buffer_size: int = int(1e6), lr: float = 3e-4, noise_sigma: float = 0.2, 
                     tau: float = 0.005, replay_batch_size: int = 256, noise_clip: float = 0.5,
                     gamma: float = 0.99, policy_update_frequency: int = 2, exploration_noise: float = 0.1,
-                    min_warmup_steps: int = 0, warmup_function: Callable[[int], int] = lambda step: 0):
+                    min_warmup_steps: int = 25000, warmup_function: Callable[[int], int] = lambda step: 0):
         """
         TD3 Implementation
         """
@@ -160,40 +163,39 @@ class StandardTD3Agent(RLAgent):
     def run(self) -> None:
         super().run()
 
-        if self.min_warmup_steps != 0:
-            self.log(f"Have {self.min_warmup_steps} steps")
-            done = False
-            state = self.env.reset()
-            
-            while self._warmup_steps < self.min_warmup_steps or not done:
-                if done:
+        while self._episodes <= self._max_episodes:
+            if self._episodes % 10 == 0 and self._episodes != 0:
+                avg_reward = 0
+
+                for _ in range(10):
                     state = self.env.reset()
                     done = False
+
+                    while not done:
+                        action = self.sample_evaluation_action(torch.tensor(state, device=self.device))
+                        state, reward, done, _ = self.env.step(action)
+                        avg_reward += reward
                 
-                action = self.env.action_space.sample()
-                next_state, reward, done, _ = self.env.step(action)
-                self.replay_buffer.store_replay(state, action, reward, next_state, done)
+                avg_reward = avg_reward / 10
 
-                self._warmup_steps += 1
-            
-            self.log(f"Complete warmup steps")
+                self.log(f"EVALUATION: Evaluated over 10 episodes, {avg_reward:.3f}")
+                self._writer.add_scalar("stats/eval_reward", avg_reward, self.steps)
 
-        while self._episodes <= self._max_episodes:
             self._episodes += 1
 
             state = self.env.reset()
             done = False
-            warmup_steps = self.warmup_function(self._episodes)
             episode_reward = 0
             self._episode_steps = 0
 
             while not done:
-                if self._episode_steps < warmup_steps:
+                if self._steps < self.min_warmup_steps:
                     action = self.env.action_space.sample()
                 else:
-                    action = self.sample_regular_action(state)
+                    action = self.sample_regular_action(torch.tensor(state, device=self.device))
                 
                 next_state, reward, done, _ = self.env.step(action)
+                done = done if self._episode_steps < self.env._max_episode_steps else False # type: ignore
                 self.replay_buffer.store_replay(state, action, reward, next_state, done)
 
                 self._steps += 1
@@ -201,7 +203,7 @@ class StandardTD3Agent(RLAgent):
                 episode_reward += reward
                 state = next_state
 
-                if self._episode_steps >= warmup_steps:
+                if self.steps >= self.min_warmup_steps:
                     self.train_policy()
 
             self._reward_log.append(episode_reward)
@@ -227,7 +229,7 @@ class StandardTD3Agent(RLAgent):
         # Q Target
         with torch.no_grad():
             noise = self.noise_distribution.sample(buffer_sample.actions.shape).clamp(-self.noise_clip, self.noise_clip).to(self.device)
-            target_actions = self.target_actor(buffer_sample.next_states)
+            target_actions = self.target_actor(buffer_sample.next_states).clamp(-self._max_action, self._max_action)
             target_actions = (target_actions + noise).clamp(-1, 1)
 
             target_input = torch.cat([buffer_sample.next_states, target_actions], dim=-1)
@@ -287,7 +289,7 @@ class StandardSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 1,
-                        warmup_steps: int = 10000, target_update_interval: int = 1):
+                        warmup_steps: int = 2000, target_update_interval: int = 1):
         """
         SAC Implementation
         """
@@ -513,7 +515,7 @@ class StandardMBPOAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 20,
-                        warmup_steps: int = 3000, target_update_interval: int = 1, ensemble_size: int = 7,
+                        warmup_steps: int = 10000, target_update_interval: int = 1, ensemble_size: int = 7,
                         rollouts_per_step: int = 100000, dynamics_train_freq: int = 250, model_samples_per_env_sample = 20,
                         retained_step_rollouts: int = 1):
         """
@@ -522,7 +524,7 @@ class StandardMBPOAgent(RLAgent):
         super().__init__("MBPO", env_name, device, video_every)
 
         self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
-        self.model_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, retained_step_rollouts * rollouts_per_step, self.device)
+        self.model_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, retained_step_rollouts * rollouts_per_step * dynamics_train_freq, self.device)
 
         # Critics predicts the reward of taking action A from state S
         self.critic_1 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
@@ -625,14 +627,16 @@ class StandardMBPOAgent(RLAgent):
         critic_2_loss = 0.5 * F.mse_loss(actual_Q2, target_Q)
 
         self._writer.add_scalar("stats/critic_loss_1", critic_1_loss.detach().cpu().item(), self._steps)
-        self._writer.add_scalar("stats/critic_loss_2", critic_1_loss.detach().cpu().item(), self._steps)
+        self._writer.add_scalar("stats/critic_loss_2", critic_2_loss.detach().cpu().item(), self._steps)
 
         self.opt_critic_1.zero_grad()
         critic_1_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic_1.parameters(), 1) # type: ignore
         self.opt_critic_1.step()
         
         self.opt_critic_2.zero_grad()
         critic_2_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic_2.parameters(), 1) # type: ignore
         self.opt_critic_2.step()
 
         # Q functions updated, now update the policy, need:
@@ -640,17 +644,21 @@ class StandardMBPOAgent(RLAgent):
         # * log(a'_t | s_t) from policy
         # * current alpha
         # Maps to Eq 7
-                    
-        real_sample_count = int(self.env_ratio * self.replay_batch_size)
-        real_sample_indices = np.random.choice(self.replay_batch_size, real_sample_count)
-        fake_sample_count = self.replay_batch_size - real_sample_count
+        
+        if self.dynamics.absolute_average_loss > 0.25:
+            actor_actions, actor_probs = self.actor.compute(buffer_sample.states)
+            real_input = torch.cat([buffer_sample.states, actor_actions], dim=-1)
+        else:
+            real_sample_count = int(self.env_ratio * self.replay_batch_size)
+            real_sample_indices = np.random.choice(self.replay_batch_size, real_sample_count)
+            fake_sample_count = self.replay_batch_size - real_sample_count
 
-        buffer_fake_samples = self.model_buffer.sample_buffer(fake_sample_count)
+            buffer_fake_samples = self.model_buffer.sample_buffer(fake_sample_count)
 
-        mixed_states = torch.cat([buffer_sample.states[real_sample_indices], buffer_fake_samples.states], dim=0)
+            mixed_states = torch.cat([buffer_sample.states[real_sample_indices], buffer_fake_samples.states], dim=0)
 
-        actor_actions, actor_probs = self.actor.compute(mixed_states)
-        real_input = torch.cat([mixed_states, actor_actions], dim=-1)
+            actor_actions, actor_probs = self.actor.compute(mixed_states)
+            real_input = torch.cat([mixed_states, actor_actions], dim=-1)
 
         # See what the critics think to the actor's prediction of the next action
         real_Q1 = self.critic_1(real_input)
@@ -658,10 +666,11 @@ class StandardMBPOAgent(RLAgent):
         min_Q = torch.min(real_Q1, real_Q2)
 
         # See Eq 7 
-        actor_loss = (self.alpha.detach() * actor_probs - min_Q).mean()
+        actor_loss = (self.alpha * actor_probs - min_Q).mean()
 
         self.opt_actor.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1) # type: ignore
         self.opt_actor.step()
 
         # Actor updated, now update the temperature (alpha), need:
@@ -672,7 +681,7 @@ class StandardMBPOAgent(RLAgent):
 
         # No need to backprop on the target or log probabilities since
         # we want to isolate the alpha update here
-        alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
+        alpha_loss = -self.log_alpha * (actor_probs + self.target_entropy).detach()
         alpha_loss = alpha_loss.mean()
         self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
 
@@ -733,7 +742,7 @@ class StandardMBPOAgent(RLAgent):
                     buffer_sample = self.replay_buffer.get_all_replays()
                     self.log(f"Training dynamics on {buffer_sample.states.shape[0]} replays")
                     self.dynamics.train(buffer_sample.states, buffer_sample.actions, buffer_sample.next_states, buffer_sample.rewards.unsqueeze(1))
-                    self.log(f"Trained dynamics, losses: {self.dynamics.losses}")
+                    self.log(f"Trained dynamics, losses: {self.dynamics.losses}, |Avg Loss|: {self.dynamics.absolute_average_loss}")
 
                     for i, loss in enumerate(self.dynamics.losses):
                         self._writer.add_scalar(f"dynamics/{i}", loss, self._steps)
@@ -746,9 +755,12 @@ class StandardMBPOAgent(RLAgent):
                 # if self._steps < self.warmup_steps:
                 #     continue
 
-                # Train the policy
-                for _ in range(self.gradient_steps):
-                    self.train_policy()
+                if self.steps >= self.warmup_steps:
+                    # Train the policy
+                    g_steps = self.gradient_steps if self.dynamics.absolute_average_loss <= 0.25 else 1
+
+                    for _ in range(g_steps):
+                        self.train_policy()
 
                 state = next_state 
             
@@ -778,9 +790,187 @@ class StandardMBPOAgent(RLAgent):
                 self._writer.add_scalar("stats/eval_reward", avg_reward, self.episodes)
                 self.log(f"[EVAL] Average reward over {eval_episodes} was {avg_reward}")
 
+class ModelBasedTD3Agent(RLAgent):
+    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
+                    buffer_size: int = int(1e6), lr: float = 3e-4, noise_sigma: float = 0.2, 
+                    tau: float = 0.005, replay_batch_size: int = 256, noise_clip: float = 0.5,
+                    gamma: float = 0.99, policy_update_frequency: int = 2, exploration_noise: float = 0.1,
+                    min_warmup_steps: int = 25000, warmup_function: Callable[[int], int] = lambda step: 0):
+        """
+        TD3 Implementation
+        """
+        super().__init__("StandardTD3", env_name, device, video_every)
+
+        # Replay buffer
+        self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
+        self.model_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, 1 * 400, self.device)
+
+        # Critics predicts the reward of taking action A from state S
+        self.critic_1 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
+        self.critic_2 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
+
+        # Actor predicts the action to take based on the current state
+        self.actor = networks.Actor(input_size=self._state_dim, output_size=self._action_dim).to(self.device)
+
+        # Establish the target networks
+        self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
+        self.target_critic_1.eval()
+        self.target_critic_2 = copy.deepcopy(self.critic_2).to(self.device)
+        self.target_critic_2.eval()
+        self.target_actor = copy.deepcopy(self.actor).to(self.device)
+        self.target_actor.eval()
+
+        # Establish optimisers
+        self.critic_1_opt = torch.optim.Adam(self.critic_1.parameters(), lr=lr)
+        self.critic_2_opt = torch.optim.Adam(self.critic_2.parameters(), lr=lr)
+        self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
+
+        # Establish sampling distributions
+        self.noise_distribution = torch.distributions.normal.Normal(0, noise_sigma)
+
+        # Dynamics modelling
+        self.dynamics = networks.EnsembleGaussianDynamics(self._state_dim, self._action_dim, 7, self.device)
+
+        self.tau = tau
+        self.replay_batch_size = replay_batch_size
+        self.noise_clip = noise_clip
+        self.gamma = gamma
+        self.policy_update_frequency = policy_update_frequency
+        self.min_warmup_steps = min_warmup_steps
+        self.warmup_function = warmup_function
+        self.exploration_noise = exploration_noise
+
+    def run(self) -> None:
+        super().run()
+
+        while self._episodes <= self._max_episodes:
+            if self._episodes % 10 == 0 and self._episodes != 0:
+                avg_reward = 0
+
+                for _ in range(10):
+                    state = self.env.reset()
+                    done = False
+
+                    while not done:
+                        action = self.sample_evaluation_action(torch.tensor(state, device=self.device))
+                        state, reward, done, _ = self.env.step(action)
+                        avg_reward += reward
+                
+                avg_reward = avg_reward / 10
+
+                self.log(f"EVALUATION: Evaluated over 10 episodes, {avg_reward:.3f}")
+                self._writer.add_scalar("stats/eval_reward", avg_reward, self.steps)
+
+            self._episodes += 1
+
+            state = self.env.reset()
+            done = False
+            episode_reward = 0
+            self._episode_steps = 0
+
+            while not done:
+                if self._steps < self.min_warmup_steps:
+                    action = self.env.action_space.sample()
+                else:
+                    action = self.sample_regular_action(torch.tensor(state, device=self.device))
+                
+                next_state, reward, done, _ = self.env.step(action)
+                done = done if self._episode_steps < self.env._max_episode_steps else False # type: ignore
+                self.replay_buffer.store_replay(state, action, reward, next_state, done)
+
+                if self.steps % 250:
+                    total_rollouts = 250 * 400
+
+                self._steps += 1
+                self._episode_steps += 1
+                episode_reward += reward
+                state = next_state
+
+                if self.steps >= self.min_warmup_steps:
+                    self.train_policy()
+
+            self._reward_log.append(episode_reward)
+            self._writer.add_scalar("stats/reward", episode_reward, self.episodes)
+            self.log(f"Episode Reward: {episode_reward}")
+    
+    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
+        states = states.reshape(1, -1)
+        return self.actor(states).cpu().data.numpy().flatten()
+
+    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
+        action = self.sample_evaluation_action(states)
+        action = (action + np.random.normal(0, self.exploration_noise, size=self._action_dim)).clip(-1, 1)
+        return action
+
+    def train_policy(self) -> None:
+        # Fill the replay buffer before we try to train the policy
+        if self.replay_buffer.count < self.replay_batch_size:
+            return
+        
+        buffer_sample = self.replay_buffer.sample_buffer(self.replay_batch_size)
+
+        # Q Target
+        with torch.no_grad():
+            noise = self.noise_distribution.sample(buffer_sample.actions.shape).clamp(-self.noise_clip, self.noise_clip).to(self.device)
+            target_actions = self.target_actor(buffer_sample.next_states).clamp(-self._max_action, self._max_action)
+            target_actions = (target_actions + noise).clamp(-1, 1)
+
+            target_input = torch.cat([buffer_sample.next_states, target_actions], dim=-1)
+
+            target_Q1 = self.target_critic_1(target_input)
+            target_Q2 = self.target_critic_2(target_input)
+            min_Q_target = torch.min(target_Q1, target_Q2)
+
+            # Temporal Difference Learning
+            target_Q = buffer_sample.rewards.unsqueeze(1) + buffer_sample.terminals.unsqueeze(1) * self.gamma * min_Q_target 
+            self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._steps)
+
+        actual_input = torch.cat([buffer_sample.states, buffer_sample.actions], dim=-1)
+
+        actual_Q1 = self.critic_1(actual_input)
+        self._writer.add_scalar("stats/critic_1", actual_Q1.detach().cpu().mean().item(), self._steps)
+        actual_Q2 = self.critic_2(actual_input)
+        self._writer.add_scalar("stats/critic_2", actual_Q2.detach().cpu().mean().item(), self._steps)
+
+        critic_loss = F.mse_loss(actual_Q1, target_Q) + F.mse_loss(actual_Q2, target_Q)
+        self._writer.add_scalar("stats/critic_loss", critic_loss.detach().cpu().item(), self._steps)
+
+        self.critic_1_opt.zero_grad()
+        self.critic_2_opt.zero_grad()
+
+        critic_loss.backward()
+
+        self.critic_1_opt.step()
+        self.critic_2_opt.step()
+
+        # Delayed policy updates
+        if self._steps % self.policy_update_frequency == 0:
+            actor_input = torch.cat([buffer_sample.states, self.actor(buffer_sample.states)], dim=-1)
+            actor_loss = -self.critic_1(actor_input).mean()
+            
+            self._writer.add_scalar("stats/actor_loss", actor_loss.detach().cpu().item(), self._steps)
+
+            self.actor_opt.zero_grad()
+            actor_loss.backward()
+            self.actor_opt.step()
+
+            self.update_target_parameters()
+
+    def update_target_parameters(self):
+        # Update frozen targets, taken from https://github.com/sfujim/TD3/blob/385b33ac7de4767bab17eb02ade4a268d3e4e24f/TD3.py
+        # theta' = tau * theta + (1 - tau) * theta'
+        for param, target_param in zip(self.critic_1.parameters(), self.target_critic_1.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+        for param, target_param in zip(self.critic_2.parameters(), self.target_critic_2.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+        for param, target_param in zip(self.actor.parameters(), self.target_actor.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
 AGENT_MAP = {
     "MBPO": StandardMBPOAgent,
     "SAC": StandardSACAgent,
-    "TD3": StandardTD3Agent
+    "TD3": StandardTD3Agent,
+    "TD3Model": ModelBasedTD3Agent
 }

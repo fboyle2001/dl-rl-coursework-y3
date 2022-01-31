@@ -52,15 +52,17 @@ def create_fully_connected_network(input_size: int, output_size: int, hidden_lay
     return layers
 
 class Critic(nn.Sequential):
-    def __init__(self, input_size: int, output_size: int, connected_size: int = 256):
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 256, hidden_count = 2):
         super().__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size, connected_size], output_activation=None)
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count)], output_activation=None)
         )
 
+        print(self)
+
 class Actor(nn.Sequential):
-    def __init__(self, input_size: int, output_size: int, connected_size: int = 256):
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 256, hidden_count = 2):
         super().__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size, connected_size], output_activation="tanh")
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count)], output_activation="tanh")
         )
 
 class GaussianActor(nn.Module):
@@ -207,6 +209,7 @@ class EnsembleGaussianDynamics:
         self.models = [SingleGaussianDynamics(state_dims, action_dims, device, connected_size, reward_dims, hidden_layers).to(self.device) for _ in range(ensemble_size)]
         self.optimisers = [torch.optim.Adam(model.parameters(), lr=lr) for model in self.models]
         self.losses = [0 for _ in range(ensemble_size)]
+        self._has_trained = False
 
     def single_predict(self, states: torch.Tensor, actions: torch.Tensor, grad: bool, model_index: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         assert model_index is None or 0 <= model_index < self.ensemble_size, f"Invalid model_index {model_index}"
@@ -266,7 +269,15 @@ class EnsembleGaussianDynamics:
         assert state_predictions is not None and reward_predictions is not None
         return state_predictions, reward_predictions
 
+    @property
+    def absolute_average_loss(self) -> float:
+        if not self._has_trained:
+            return 100
+        
+        return np.array(self.losses).mean()
+
     def train(self, states: torch.Tensor, actions: torch.Tensor, true_next_states: torch.Tensor, true_next_rewards: torch.Tensor) -> None:
+        self._has_trained = True
         eval_masks = [np.random.choice(states.shape[0], size=int(0.2 * states.shape[0])) for _ in range(len(self.models))]
 
         steps_since_last_improvement = [0 for _ in range(len(self.models))]

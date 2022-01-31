@@ -1,7 +1,7 @@
 import argparse
 import agents
 import torch
-from typing import Optional
+import os
 
 def main():
     parser = argparse.ArgumentParser()
@@ -21,7 +21,8 @@ def main():
     print(f"Cuda Enabled: {args.cuda} (device: {device})")
     print(f"Video (every N episodes): {args.video_freq}")
     print(f"Initialised ID: {agent._id}")
-    print(f"Directory: {agent._home_directory}")
+    print(f"Directory: {os.path.abspath(agent._home_directory)}")
+
     print("Starting...")
 
     agent.run()
