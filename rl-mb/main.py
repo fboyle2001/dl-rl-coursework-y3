@@ -2,6 +2,7 @@ import argparse
 import agents
 import torch
 import os
+import svg
 
 def main():
     parser = argparse.ArgumentParser()
@@ -10,6 +11,8 @@ def main():
     parser.add_argument("--agent")
     parser.add_argument("--video-freq", type=int, default=None)
     args = parser.parse_args()
+
+    agents.AGENT_MAP["TrueSVG"] = svg.SACSVGAgent
 
     assert args.agent and args.agent in agents.AGENT_MAP.keys(), f"{args.agent} is an invalid agent type"
 

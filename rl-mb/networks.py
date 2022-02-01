@@ -15,7 +15,8 @@ activations = {
 }
 
 initialisers = {
-    "xavier": nn.init.xavier_uniform_
+    "xavier": nn.init.xavier_uniform_,
+    "orthogonal": nn.init.orthogonal_
 }
 
 # Idea from https://github.com/ku2482/rltorch/blob/master/rltorch/network/builder.py
@@ -29,7 +30,7 @@ def create_initialiser(initialiser_key: str) -> Callable:
     
     return initialiser
 
-def create_fully_connected_network(input_size: int, output_size: int, hidden_layers: List[int], output_activation: Optional[str], initialiser: str = "xavier") -> nn.Sequential:
+def create_fully_connected_network(input_size: int, output_size: int, hidden_layers: List[int], output_activation: Optional[str], initialiser: str = "orthogonal") -> nn.Sequential:
     assert initialiser in initialisers.keys(), f"Currently only supports {initialisers.keys()} for initialisers"
     assert output_activation is None or output_activation in activations.keys(), f"Currently only supports {activations.keys()} for activations"
     assert len(hidden_layers) != 0, "Requires at least one hidden layer"
@@ -365,10 +366,17 @@ class EnsembleGaussianDynamics:
         
         self.losses = best_eval_losses
 
+def get_params(models):
+    for m in models:
+        for p in m.parameters():
+            yield p
+
 class GRUDynamicsModel(nn.Module):
     def __init__(self, input_size: int, output_size: int, horizon: int, device: Union[str, torch.device], clip_grad: Optional[float],
                     latent_dim: int = 512, coder_hidden_dim: int = 512, encoder_hidden_depth: int = 2,
                     decoder_hidden_depth: int = 0, gru_layers: int = 2, lr: float = 1e-3):
+        super().__init__()
+        
         """
         Encoder:
             in: obs_dim + action_dim
@@ -396,7 +404,6 @@ class GRUDynamicsModel(nn.Module):
             learning_rate = 1e-3
             horizon = agent.horizon =??
             action_range = ??
-
         """
         
         self.device = device
@@ -409,7 +416,8 @@ class GRUDynamicsModel(nn.Module):
         self.model = nn.GRU(input_size=latent_dim, hidden_size=latent_dim, num_layers=gru_layers)
         self.decoder = create_fully_connected_network(latent_dim, output_size, hidden_layers=[coder_hidden_dim for _ in range(decoder_hidden_depth + 1)], output_activation=None)
 
-        self.optimiser = torch.optim.Adam(list(self.encoder.parameters()) + list(self.model.parameters()) + list(self.decoder.parameters()), lr=lr)
+        params = get_params([self.encoder, self.model, self.decoder])
+        self.optimiser = torch.optim.Adam(params, lr=lr) # type: ignore
 
         print("Encoder")
         print(self.encoder)
@@ -424,6 +432,7 @@ class GRUDynamicsModel(nn.Module):
         return self.predict_states(state, actions)
 
     def unroll_horizon(self, initial_state: torch.Tensor, actor: GaussianActor, stochastic=True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        assert initial_state.dim() == 2
         hidden_state = torch.zeros(self.gru_layers, initial_state.shape[0], self.latent_dim).to(self.device)
 
         predicted_states = []
@@ -431,7 +440,7 @@ class GRUDynamicsModel(nn.Module):
         log_probs = []
         current_state = initial_state
 
-        for _ in range(self.horizon):
+        for _ in range(self.horizon - 1):
             # Sample the action to take
             actions, action_log_prob =  actor.compute(current_state, stochastic)
             action_sequence.append(actions)
@@ -442,10 +451,11 @@ class GRUDynamicsModel(nn.Module):
             # Estimate the change in state
             joined_states_actions = torch.cat([current_state, actions], dim=-1)
             encoded = self.encoder(joined_states_actions).unsqueeze(0) # Need to unsqueeze?
-            latent_delta_next_state = self.model(encoded, hidden_state)
+            latent_delta_next_state, hidden_state = self.model(encoded, hidden_state)
 
             # Move to the next state
             next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0)) # Need to squeeze?
+            # print("Next state shape:", next_state.shape)
 
             # Track the predicted states
             predicted_states.append(next_state)
@@ -455,6 +465,8 @@ class GRUDynamicsModel(nn.Module):
         final_action, final_log_prob = actor.compute(current_state, stochastic)
         action_sequence.append(final_action)
         log_probs.append(final_log_prob)
+
+        # print("PSL", len(predicted_states))
 
         policy_actions = torch.stack(action_sequence)
         predicted_states = torch.stack(predicted_states)
@@ -474,7 +486,7 @@ class GRUDynamicsModel(nn.Module):
 
             joined_states_actions = torch.cat([current_state, current_action], dim=-1)
             encoded = self.encoder(joined_states_actions).unsqueeze(0) # Need to unsqueeze?
-            latent_delta_next_state = self.model(encoded, hidden_state)
+            latent_delta_next_state, hidden_state = self.model(encoded, hidden_state)
 
             # Move to the next state
             next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0)) # Need to squeeze?
@@ -486,11 +498,13 @@ class GRUDynamicsModel(nn.Module):
         predicted_states = torch.stack(predicted_states)
         return predicted_states
 
-    def train(self, states: torch.Tensor, actions: torch.Tensor, rewards) -> float:
+    def train(self, states: torch.Tensor, actions: torch.Tensor) -> float:
         # Predict states from the first state 
         predicted_states = self.forward(states[0], actions[:-1])
         # Want to match it to the real next states
         target_states = states[1:] 
+
+        assert predicted_states.shape == target_states.shape
 
         # Loss function is simply the MSE
         loss = F.mse_loss(predicted_states, target_states)
@@ -501,7 +515,7 @@ class GRUDynamicsModel(nn.Module):
 
         # Gradient clipping
         if self.clip_grad is not None:
-            assert(self.optimiser.param_groups) == 1
+            assert len(self.optimiser.param_groups) == 1
             torch.nn.utils.clip_grad_norm_(self.optimiser.param_groups[0]["params"], self.clip_grad) # type: ignore
 
         self.optimiser.step()

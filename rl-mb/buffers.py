@@ -1,3 +1,4 @@
+from random import random
 from turtle import done
 from typing import Tuple, Any, Optional, Union
 import time
@@ -374,3 +375,91 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
     
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
         raise NotImplementedError("Trajectories are unsupported for this buffer")
+
+class MultiStepReplayBuffer:
+    def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
+        self.device = device
+
+        self._state_dim = state_dim
+        self._action_dim = action_dim
+
+        # Buffers
+        self.states         = np.zeros((max_size, state_dim))
+        self.actions        = np.zeros((max_size, action_dim))
+        self.rewards        = np.zeros(max_size)
+        self.next_states    = np.zeros((max_size, state_dim))
+        self.true_not_dones = np.zeros(max_size, dtype="bool")
+        self.not_dones      = np.zeros(max_size, dtype="bool")
+
+        # Either stores 0 or a positive number at each index a positive number
+        # indicates that it is the end of sequence, the number indicates how long the sequence is
+        self.sequences      = np.zeros((max_size, 1))
+
+        self.max_size = max_size
+        self.pointer = 0
+        self.count = 0
+        self.sequence_length = 0
+
+    def store(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, true_done: bool, done: bool) -> None:
+        self.sequence_length += 1
+
+        true_not_done = not true_done
+        not_done = not done
+
+        self.states[self.pointer] = state
+        self.actions[self.pointer] = action
+        self.rewards[self.pointer] = reward
+        self.next_states[self.pointer] = next_state
+        self.true_not_dones[self.pointer] = true_not_done
+        self.not_dones[self.pointer] = not_done
+        self.sequences[self.pointer] = self.sequence_length
+
+        if done:
+            self.sequence_length = 0
+
+        self.count = min(self.count + 1, self.max_size)
+        self.pointer = (self.pointer + 1) % self.max_size
+
+    def sample(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        random_sample = np.random.choice(self.count, size=batch_size)
+
+        return (
+            torch.tensor(self.states[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(self.actions[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(self.rewards[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(self.next_states[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(self.true_not_dones[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(self.not_dones[random_sample], dtype=torch.float32).to(self.device)
+        )
+
+    def sample_sequences(self, sequences: int, sequence_length: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Find the indices of the final replay in each sequence of min sequence_length
+        final_replay_indices = np.where(self.sequences[:, 0] > sequence_length)[0]
+
+        # Now select a random sample (sequences) of these
+        selected_final_indices = np.random.choice(final_replay_indices, size=sequences, replace=True)
+
+        # Sorted by timestep rather than sequence
+        timestepped_states = []
+        timestepped_actions = []
+        timestepped_rewards = []
+
+        for offset in range(0, sequence_length):
+            time_states = self.states[selected_final_indices - sequence_length + offset]
+            timestepped_states.append(time_states)
+            time_actions = self.actions[selected_final_indices - sequence_length + offset]
+            timestepped_actions.append(time_actions)
+            time_rewards = self.rewards[selected_final_indices - sequence_length + offset]
+            timestepped_rewards.append(time_rewards)
+
+        timestepped_states = np.stack(timestepped_states)
+        timestepped_actions = np.stack(timestepped_actions)
+        timestepped_rewards = np.stack(timestepped_rewards)
+
+        return (
+            torch.tensor(timestepped_states, dtype=torch.float32).to(self.device),
+            torch.tensor(timestepped_actions, dtype=torch.float32).to(self.device),
+            torch.tensor(timestepped_rewards, dtype=torch.float32).to(self.device)
+        )
+
+        # Shape is [sequence_length, sequences, ...] do whatever with these
