@@ -1,3 +1,4 @@
+from turtle import done
 from typing import Tuple, Any, Optional, Union
 import time
 import abc
@@ -8,6 +9,7 @@ import torch
 from collections import namedtuple
 
 BufferSample = namedtuple("BufferSample", ["states", "actions", "rewards", "next_states", "terminals"])
+Trajectory = namedtuple("Trajectory", ["states", "actions", "rewards", "next_states", "terminals"])
 
 class AbstractReplayBuffer(abc.ABC):
     def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
@@ -17,26 +19,35 @@ class AbstractReplayBuffer(abc.ABC):
         self._action_dim = action_dim
 
         # Buffers
-        self.states      = np.zeros((max_size, state_dim))
-        self.actions     = np.zeros((max_size, action_dim))
-        self.rewards     = np.zeros(max_size)
-        self.next_states = np.zeros((max_size, state_dim))
-        self.terminals   = np.zeros(max_size, dtype="bool")
+        self.states       = np.zeros((max_size, state_dim))
+        self.actions      = np.zeros((max_size, action_dim))
+        self.rewards      = np.zeros(max_size)
+        self.next_states  = np.zeros((max_size, state_dim))
+        self.terminals    = np.zeros(max_size, dtype="bool")
+        # Will store the end index of the trajectory and the length of the trajectory
+        self.trajectories = np.zeros((max_size, 1))
 
         self.max_size = max_size
         self.pointer = 0
         self.count = 0
+        self.traj_length = 0
 
     def is_full(self) -> bool:
         return self.count == self.max_size
 
     def store_replay(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, is_terminal: bool) -> None:
+        self.traj_length += 1
+
         self.states[self.pointer]      = state
         self.actions[self.pointer]     = action
         self.rewards[self.pointer]     = reward
         self.next_states[self.pointer] = next_state
         self.terminals[self.pointer]   = not is_terminal
+        self.trajectories[self.pointer] = self.traj_length if is_terminal else 0
         
+        if is_terminal:
+            self.traj_length = 0
+
         self.count = min(self.count + 1, self.max_size)
         self.pointer = (self.pointer + 1) % self.max_size
 
@@ -57,6 +68,10 @@ class AbstractReplayBuffer(abc.ABC):
 
     @abc.abstractmethod
     def sample_buffer(self, batch_size: int) -> BufferSample:
+        pass
+
+    @abc.abstractmethod
+    def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
         pass
 
 class BinarySumTree:
@@ -210,7 +225,27 @@ class StandardReplayBuffer(AbstractReplayBuffer):
             torch.FloatTensor(self.next_states[random_sample]).to(self.device),
             torch.FloatTensor(self.terminals[random_sample]).to(self.device)
         )
-        
+
+    def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
+        suitable_ends = np.where(self.trajectories[:, 0] > steps_per_trajectory)[0]
+        selected_ends = np.random.choice(suitable_ends, trajectory_count, replace=True)
+        trajectories = []
+
+        for trajectory_end in selected_ends:
+            trajectory_start = trajectory_end - steps_per_trajectory
+            trajectory = torch.tensor(
+                [
+                    self.states[trajectory_start : trajectory_end],
+                    self.actions[trajectory_start : trajectory_end],
+                    self.rewards[trajectory_start : trajectory_end],
+                    self.next_states[trajectory_start : trajectory_end],
+                    self.terminals[trajectory_start : trajectory_end]
+                ]
+            ).to(self.device)
+
+            trajectories.append(trajectory)
+
+        return torch.stack(trajectories)
 
 class PriorityReplayBuffer(AbstractReplayBuffer):
     def __init__(self, state_dim: int, action_dim: int, leaf_power: int, device: Union[str, torch.device]):
@@ -336,3 +371,6 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
         )
 
         return buffer, indexes, importance_sampling_weights
+    
+    def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
+        raise NotImplementedError("Trajectories are unsupported for this buffer")

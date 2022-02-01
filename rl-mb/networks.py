@@ -1,4 +1,7 @@
+from mimetypes import init
+from optparse import Option
 from typing import List, Optional, Callable, Tuple, Union
+from unicodedata import bidirectional
 
 import torch 
 import torch.nn as nn
@@ -52,21 +55,21 @@ def create_fully_connected_network(input_size: int, output_size: int, hidden_lay
     return layers
 
 class Critic(nn.Sequential):
-    def __init__(self, input_size: int, output_size: int, connected_size: int = 256, hidden_count = 2):
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 512, hidden_count = 2):
         super().__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count)], output_activation=None)
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation=None)
         )
 
         print(self)
 
 class Actor(nn.Sequential):
-    def __init__(self, input_size: int, output_size: int, connected_size: int = 256, hidden_count = 2):
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 512, hidden_count = 2):
         super().__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count)], output_activation="tanh")
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation="tanh")
         )
 
 class GaussianActor(nn.Module):
-    def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device], connected_size: int = 256,
+    def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device], connected_size: int = 512,
                  sigma_upper_bound: float = 8, action_scale: float = 1, action_offset: float = 0):
         """
         The Gaussian Actor takes in a state and predicts the parameters of
@@ -93,10 +96,15 @@ class GaussianActor(nn.Module):
         self._epsilon = 1e-8
 
         # Clip the sigmas to prevent too great variation, essentially arbitrary
-        self._log_sigma_lower_bound = torch.tensor([np.log(self._epsilon)], device=self.device)
-        self._log_sigma_upper_bound = torch.tensor([np.log(sigma_upper_bound)], device=self.device)
+        self._log_sigma_lower_bound = torch.tensor([-5], device=self.device)
+        self._log_sigma_upper_bound = torch.tensor([2], device=self.device)
 
-        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size, connected_size], output_activation=None).to(self.device)
+        print(self._log_sigma_lower_bound)
+        print(self._log_sigma_upper_bound)
+
+        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size, connected_size, connected_size], output_activation=None).to(self.device)
+
+        print(self.layers)
 
     def forward(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # NN output
@@ -137,8 +145,8 @@ class GaussianActor(nn.Module):
 
         return actions, dist, unbounded_actions
 
-    def compute(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        actions, dist, unbounded_actions = self._compute_actions(states)
+    def compute(self, states: torch.Tensor, stochastic: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+        actions, dist, unbounded_actions = self._compute_actions(states, stochastic)
 
         # Appendix C of Haaraja 2018
         log_prob_actions = dist.log_prob(unbounded_actions)
@@ -158,6 +166,20 @@ class GaussianActor(nn.Module):
     def compute_actions_log_probability(self, states: torch.Tensor) -> torch.Tensor:
         _, log_prob_actions = self.compute(states)
         return log_prob_actions
+
+class StandardScaler:
+    def __init__(self):
+        self.mean = None
+        self.std = None
+        self.eps = 1e-8
+
+    def fit(self, data: torch.Tensor) -> None:
+        self.mean = data.mean(dim=0)
+        self.std = data.std(dim=0)
+
+    def transform(self, data: torch.Tensor) -> torch.Tensor:
+        assert self.mean is not None and self.std is not None, "Must fit before transforming"
+        return (data - self.mean) / (self.std + self.eps)
 
 class SingleGaussianDynamics(nn.Module):
     def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device],
@@ -209,6 +231,7 @@ class EnsembleGaussianDynamics:
         self.models = [SingleGaussianDynamics(state_dims, action_dims, device, connected_size, reward_dims, hidden_layers).to(self.device) for _ in range(ensemble_size)]
         self.optimisers = [torch.optim.Adam(model.parameters(), lr=lr) for model in self.models]
         self.losses = [0 for _ in range(ensemble_size)]
+        self.scaler = StandardScaler()
         self._has_trained = False
 
     def single_predict(self, states: torch.Tensor, actions: torch.Tensor, grad: bool, model_index: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -218,6 +241,8 @@ class EnsembleGaussianDynamics:
             model_index = np.random.choice(np.arange(self.ensemble_size))
         
         selected_model = self.models[model_index]
+        # Scale
+        states, actions = self.scaler.transform(torch.cat([states, actions], dim=-1)).chunk(2, dim=-1)
 
         if grad:
             state_predictions, reward_predictions = selected_model.predict(states, actions)
@@ -232,7 +257,7 @@ class EnsembleGaussianDynamics:
             weights = F.softmin(torch.tensor(self.losses))
 
         with torch.no_grad():
-            state_predictions, reward_predictions = self.single_predict(states, actions, grad=False) * weights[0]
+            state_predictions, reward_predictions = self.single_predict(states, actions, grad=False, model_index=0) * weights[0]
 
             for model_index in range(1, self.ensemble_size):
                 s, r = self.models[model_index].predict(states, actions) * weights[model_index]
@@ -279,6 +304,11 @@ class EnsembleGaussianDynamics:
     def train(self, states: torch.Tensor, actions: torch.Tensor, true_next_states: torch.Tensor, true_next_rewards: torch.Tensor) -> None:
         self._has_trained = True
         eval_masks = [np.random.choice(states.shape[0], size=int(0.2 * states.shape[0])) for _ in range(len(self.models))]
+
+        # Fit and transform
+        joined_states_actions = torch.cat([states, actions], dim=-1)
+        self.scaler.fit(joined_states_actions)
+        states, actions = self.scaler.transform(joined_states_actions).chunk(2, dim=-1)
 
         steps_since_last_improvement = [0 for _ in range(len(self.models))]
         best_eval_losses = [None for _ in range(len(self.models))]
@@ -335,4 +365,169 @@ class EnsembleGaussianDynamics:
         
         self.losses = best_eval_losses
 
-                
+class GRUDynamicsModel(nn.Module):
+    def __init__(self, input_size: int, output_size: int, horizon: int, device: Union[str, torch.device], clip_grad: Optional[float],
+                    latent_dim: int = 512, coder_hidden_dim: int = 512, encoder_hidden_depth: int = 2,
+                    decoder_hidden_depth: int = 0, gru_layers: int = 2, lr: float = 1e-3):
+        """
+        Encoder:
+            in: obs_dim + action_dim
+            hidden_dim: encoder_hidden_dim = 512
+            out: latent_dim = 512
+            depth: encoder_hidden_depth = 2
+        
+        GRU:
+            in: latent_dim = 512
+            out: latent_dim = 512
+            num_layers: rec_num_layers = 2
+
+        Decoder:
+            in: latent_dim = 512
+            hidden_dim: decoder_hidden_dim = 512
+            out: obs_dim
+            depth: decoder_hidden_depth = 0
+
+        Weights: Initialise encoder and decoder but not the GRU
+        Optimiser: Optimise encoder, GRU and decoder all together
+
+        Others:
+            detach_xt = True
+            clip_grad_norm = 1.0
+            learning_rate = 1e-3
+            horizon = agent.horizon =??
+            action_range = ??
+
+        """
+        
+        self.device = device
+        self.gru_layers = gru_layers
+        self.latent_dim = latent_dim
+        self.horizon = horizon
+        self.clip_grad = clip_grad
+
+        self.encoder = create_fully_connected_network(input_size, latent_dim, hidden_layers=[coder_hidden_dim for _ in range(encoder_hidden_depth + 1)], output_activation=None)
+        self.model = nn.GRU(input_size=latent_dim, hidden_size=latent_dim, num_layers=gru_layers)
+        self.decoder = create_fully_connected_network(latent_dim, output_size, hidden_layers=[coder_hidden_dim for _ in range(decoder_hidden_depth + 1)], output_activation=None)
+
+        self.optimiser = torch.optim.Adam(list(self.encoder.parameters()) + list(self.model.parameters()) + list(self.decoder.parameters()), lr=lr)
+
+        print("Encoder")
+        print(self.encoder)
+
+        print("Model")
+        print(self.model)
+
+        print("Decoder")
+        print(self.decoder)
+    
+    def forward(self, state: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.predict_states(state, actions)
+
+    def unroll_horizon(self, initial_state: torch.Tensor, actor: GaussianActor, stochastic=True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden_state = torch.zeros(self.gru_layers, initial_state.shape[0], self.latent_dim).to(self.device)
+
+        predicted_states = []
+        action_sequence = []
+        log_probs = []
+        current_state = initial_state
+
+        for _ in range(self.horizon):
+            # Sample the action to take
+            actions, action_log_prob =  actor.compute(current_state, stochastic)
+            action_sequence.append(actions)
+            log_probs.append(action_log_prob)
+
+            current_state = current_state.detach()
+
+            # Estimate the change in state
+            joined_states_actions = torch.cat([current_state, actions], dim=-1)
+            encoded = self.encoder(joined_states_actions).unsqueeze(0) # Need to unsqueeze?
+            latent_delta_next_state = self.model(encoded, hidden_state)
+
+            # Move to the next state
+            next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0)) # Need to squeeze?
+
+            # Track the predicted states
+            predicted_states.append(next_state)
+            current_state = next_state
+        
+        # Believe the final one will be used to check termination?
+        final_action, final_log_prob = actor.compute(current_state, stochastic)
+        action_sequence.append(final_action)
+        log_probs.append(final_log_prob)
+
+        policy_actions = torch.stack(action_sequence)
+        predicted_states = torch.stack(predicted_states)
+        log_probs = torch.stack(log_probs).squeeze(2) # Need to squeeze?
+
+        # Log probs are need for V_(0:H)^(pi, alpha)[x] for optimisation
+        return predicted_states, policy_actions, log_probs
+
+    def predict_states(self, initial_state: torch.Tensor, action_sequence: torch.Tensor) -> torch.Tensor:
+        predicted_states = []
+        hidden_state = torch.zeros(self.gru_layers, initial_state.shape[0], self.latent_dim).to(self.device)
+        current_state = initial_state
+
+        for action_index in range(action_sequence.shape[0]):
+            current_action = action_sequence[action_index]
+            current_state = current_state.detach()
+
+            joined_states_actions = torch.cat([current_state, current_action], dim=-1)
+            encoded = self.encoder(joined_states_actions).unsqueeze(0) # Need to unsqueeze?
+            latent_delta_next_state = self.model(encoded, hidden_state)
+
+            # Move to the next state
+            next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0)) # Need to squeeze?
+
+            # Track the predicted states
+            predicted_states.append(next_state)
+            current_state = next_state
+        
+        predicted_states = torch.stack(predicted_states)
+        return predicted_states
+
+    def train(self, states: torch.Tensor, actions: torch.Tensor, rewards) -> float:
+        # Predict states from the first state 
+        predicted_states = self.forward(states[0], actions[:-1])
+        # Want to match it to the real next states
+        target_states = states[1:] 
+
+        # Loss function is simply the MSE
+        loss = F.mse_loss(predicted_states, target_states)
+
+        # Optimise
+        self.optimiser.zero_grad()
+        loss.backward()
+
+        # Gradient clipping
+        if self.clip_grad is not None:
+            assert(self.optimiser.param_groups) == 1
+            torch.nn.utils.clip_grad_norm_(self.optimiser.param_groups[0]["params"], self.clip_grad) # type: ignore
+
+        self.optimiser.step()
+
+        return loss.detach().item()
+
+
+class RewardModel(nn.Sequential):
+    """
+    hidden_dim = 512
+    hidden_depth = 2
+    lr = 1e-3
+    """
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 512, hidden_count = 2):
+        super().__init__(
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation="tanh")
+        )
+
+class TerminationModel(nn.Sequential):
+    """
+    hidden_dim = 512
+    hidden_depth = 2
+    lr = 1e-3
+    ctrl_accum = True ???? 
+    """
+    def __init__(self, input_size: int, output_size: int, connected_size: int = 512, hidden_count = 2):
+        super().__init__(
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation="tanh")
+        )
