@@ -22,7 +22,7 @@ def main():
 
     print(f"Agent Name: {agent._agent_name}")
     print(f"Env: {args.env}")
-    print(f"Virtual Display: {args.virutal_display}")
+    print(f"Virtual Display: {args.virtual_display}")
     print(f"Cuda Enabled: {args.cuda} (device: {device})")
     print(f"Video (every N episodes): {args.video_freq}")
     print(f"Initialised ID: {agent._id}")
