@@ -391,7 +391,8 @@ class SACSVGAgent(RLAgent):
 
         # Alpha can get very close to 0 so for the same reason as in
         # the GaussianActor we optimise ln(alpha) instead for numerical stability
-        self.log_alpha = torch.tensor(np.log(0.1), requires_grad=True, device=self.device)
+        # self.log_alpha = torch.tensor(np.log(0.1), requires_grad=True, device=self.device)
+        self.alpha = 0.2
 
         # World Model
         # self.dynamics = networks.GRUDynamicsModel(self._state_dim + self._action_dim, self._state_dim, horizon=3,
@@ -405,7 +406,7 @@ class SACSVGAgent(RLAgent):
         self.opt_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=1e-4)
         self.opt_critic_2 = torch.optim.Adam(self.critic_2.parameters(), lr=1e-4)
         self.opt_actor = torch.optim.Adam(self.replaced_actor.parameters(), lr=1e-4)
-        self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=1e-4)
+        # self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=1e-4)
 
         self.opt_rewards = torch.optim.Adam(self.reward_model.parameters(), lr=1e-3)
         self.opt_terminations = torch.optim.Adam(self.termination_model.parameters(), lr=1e-3)
@@ -420,11 +421,11 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 20000
+        self.warmup_steps = 10000
 
-    @property
-    def alpha(self):
-        return self.log_alpha.exp()
+    # @property
+    # def alpha(self):
+    #     return self.log_alpha.exp()
 
     def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
         states = states.unsqueeze(0)
@@ -512,8 +513,9 @@ class SACSVGAgent(RLAgent):
 
             # See J_(pi, alpha)^[SVG](D_s) this is the internal expectation expression
             # actually its the first expectation fully as states ~ D_s as input
-            rewards -= self.alpha.detach() * log_probs
-            
+            # rewards -= self.alpha.detach() * log_probs
+            rewards -= self.alpha * log_probs
+
             # Discount rewards the further in time we go
             rewards *= self.gamma_horizon.unsqueeze(1)
 
@@ -542,12 +544,13 @@ class SACSVGAgent(RLAgent):
 
         self._writer.add_scalar("loss/alpha", alpha_loss.detach().cpu(), self._steps)
 
-        self.opt_alpha.zero_grad()
-        alpha_loss.backward()
-        nn.utils.clip_grad_norm_([self.log_alpha], 1.0) # type: ignore
-        self.opt_alpha.step()
+        # self.opt_alpha.zero_grad()
+        # alpha_loss.backward()
+        # nn.utils.clip_grad_norm_([self.log_alpha], 1.0) # type: ignore
+        # self.opt_alpha.step()
 
-        self._writer.add_scalar("stats/alpha", self.alpha.detach().cpu(), self._steps)
+        # self._writer.add_scalar("stats/alpha", self.alpha.detach().cpu(), self._steps)
+        self._writer.add_scalar("stats/alpha", self.alpha, self._steps)
 
     def update_critics(self, states, actions, rewards, next_states, not_dones):
         # Compute Q^(target)_theta(x_t, u_t)
@@ -560,7 +563,8 @@ class SACSVGAgent(RLAgent):
             # Calculate both critic Qs and then take the min
             target_Q1 = self.target_critic_1(target_input)
             target_Q2 = self.target_critic_2(target_input)
-            min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
+            # min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
+            min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha * log_probs
 
             # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
             # TODO: Maybe see what happens when we remove the unsqueeze?
