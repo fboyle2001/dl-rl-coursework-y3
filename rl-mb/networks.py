@@ -405,6 +405,23 @@ class GRUDynamicsModel(nn.Module):
             learning_rate = 1e-3
             horizon = agent.horizon =??
             action_range = ??
+        
+        All Parameters:
+            state_dim -> env
+            action_dim -> env
+            action_range = 1
+            horizon = 3
+            device -> self.device
+            detach_xt = True
+            clip_grad_norm = 1.0
+            xu_enc_hidden_dim = 512
+            xu_enc_hidden_depth = 2
+            x_dec_hidden_dim = 512
+            x_dec_hidden_depth = 0
+            rec_type = GRU
+            rec_latent_dim = 512
+            rec_num_layers = 2
+            lr = 1e-3
         """
         
         self.device = device

@@ -10,8 +10,6 @@ from torch import nn
 import copy
 import numpy as np
 import torch.nn.functional as F
-import math
-from torch import distributions as pyd
 
 ## STOLEN FUNCTIONS
 def get_params(models):
@@ -55,109 +53,6 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
         mods.append(output_mod)
     trunk = nn.Sequential(*mods)
     return trunk
-
-class TanhTransform(pyd.transforms.Transform):
-    r"""
-    Transform via the mapping :math:`y = \tanh(x)`.
-    It is equivalent to
-    ```
-    ComposeTransform([AffineTransform(0., 2.), SigmoidTransform(), AffineTransform(-1., 2.)])
-    ```
-    However this might not be numerically stable, thus it is recommended to use `TanhTransform`
-    instead.
-    Note that one should use `cache_size=1` when it comes to `NaN/Inf` values.
-    """
-    domain = pyd.constraints.real # type: ignore
-    codomain = pyd.constraints.interval(-1.0, 1.0) # type: ignore
-    bijective = True
-    sign = +1 # type: ignore
-
-    def __init__(self, cache_size=1):
-        super().__init__(cache_size=cache_size)
-
-    @staticmethod
-    def atanh(x):
-        return 0.5 * (x.log1p() - (-x).log1p())
-
-    def __eq__(self, other):
-        return isinstance(other, TanhTransform)
-
-    def _call(self, x):
-        return x.tanh()
-
-    def _inverse(self, y):
-        # We do not clamp to the boundary here as it may degrade the performance of certain algorithms.
-        # one should use `cache_size=1` instead
-        return self.atanh(y)
-
-    def log_abs_det_jacobian(self, x, y):
-        # We use a formula that is more numerically stable, see details in the following link
-        # https://github.com/tensorflow/probability/commit/ef6bb176e0ebd1cf6e25c6b5cecdd2428c22963f#diff-e120f70e92e6741bca649f04fcd907b7
-        return 2. * (math.log(2.) - x - F.softplus(-2. * x))
-
-class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
-    def __init__(self, loc, scale):
-        self.loc = loc
-        self.scale = scale
-
-        self.base_dist = pyd.Normal(loc, scale)
-        transforms = [TanhTransform()]
-        super().__init__(self.base_dist, transforms)
-
-    @property
-    def mean(self):
-        mu = self.loc
-        for tr in self.transforms:
-            mu = tr(mu)
-        return mu
-
-    def entropy(self):
-        return self.base_dist.entropy()
-
-class Actor(nn.Module):
-    """An isotropic Gaussian policy."""
-    def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth,
-                 log_std_bounds):
-        super().__init__()
-
-        self.log_std_bounds = log_std_bounds
-        self.trunk = mlp(obs_dim, hidden_dim, 2 * action_dim,
-                               hidden_depth)
-
-        print("TRUNK")
-        print(self.trunk)
-
-        self.outputs = dict()
-        self.apply(weight_init)
-
-    def forward(self, obs, compute_pi=True, compute_log_pi=True):
-        mu, log_std = self.trunk(obs).chunk(2, dim=-1)
-
-        # constrain log_std inside [log_std_min, log_std_max]
-        log_std = torch.tanh(log_std)
-        log_std_min, log_std_max = self.log_std_bounds
-        log_std = log_std_min + 0.5 * (log_std_max - log_std_min) * (log_std +
-                                                                     1)
-
-        std = log_std.exp()
-
-        self.outputs['mu'] = mu
-        self.outputs['std'] = std
-
-        policy = SquashedNormal(mu, std)
-        pi = policy.rsample() if compute_pi else None
-        log_pi = policy.log_prob(pi).sum(
-            -1, keepdim=True) if compute_log_pi else None
-
-        return policy.mean, pi, log_pi
-
-    def log(self, logger, step):
-        for k, v in self.outputs.items():
-            logger.log_histogram(f'train_actor/{k}_hist', v, step)
-
-        for i, m in enumerate(self.trunk):
-            if type(m) == nn.Linear:
-                logger.log_param(f'train_actor/fc{i}', m, step)
 
 # Copyright (c) Facebook, Inc. and its affiliates.
 
@@ -399,8 +294,8 @@ class SACSVGAgent(RLAgent):
         # World Model
         # self.dynamics = networks.GRUDynamicsModel(self._state_dim + self._action_dim, self._state_dim, horizon=3,
         #                             device=self.device, clip_grad=1.0, lr=1e-3).to(self.device)
-        print(self.env.spec.id) # type: ignore
-        self.dynamics = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, 1, 3, self.device, True, 1.0, 512, 2, 1, 512, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
+
+        self.dynamics = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, 1, 3, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
         self.termination_model = networks.TerminationModel(self._state_dim + self._action_dim, 1).to(self.device)
         self.reward_model = networks.RewardModel(self._state_dim + self._action_dim, 1).to(self.device)
 
