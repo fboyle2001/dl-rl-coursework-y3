@@ -1,8 +1,3 @@
-from cmath import log
-from ntpath import join
-from operator import pos
-import re
-from turtle import done
 from typing import Union, Optional
 
 from agents import RLAgent
@@ -128,6 +123,9 @@ class Actor(nn.Module):
         self.log_std_bounds = log_std_bounds
         self.trunk = mlp(obs_dim, hidden_dim, 2 * action_dim,
                                hidden_depth)
+
+        print("TRUNK")
+        print(self.trunk)
 
         self.outputs = dict()
         self.apply(weight_init)
@@ -262,10 +260,13 @@ class SeqDx(nn.Module):
         xt = init_x
         for t in range(self.horizon-1):
             policy_kwargs = {}
-            if sample:
-                _, ut, log_p_ut = policy(xt, **policy_kwargs)
-            else:
-                ut, _, log_p_ut = policy(xt, **policy_kwargs)
+            # if sample:
+            #     _, ut, log_p_ut = policy(xt, **policy_kwargs)
+            # else:
+            #     ut, _, log_p_ut = policy(xt, **policy_kwargs)
+
+            ut, log_p_ut = policy.compute(xt, stochastic=sample)
+
             us.append(ut)
             log_p_us.append(log_p_ut)
 
@@ -287,10 +288,12 @@ class SeqDx(nn.Module):
 
         if last_u:
             policy_kwargs = {}
-            if sample:
-                _, ut, log_p_ut = policy(xt, **policy_kwargs)
-            else:
-                ut, _, log_p_ut = policy(xt, **policy_kwargs)
+            # if sample:
+            #     _, ut, log_p_ut = policy(xt, **policy_kwargs)
+            # else:
+            #     ut, _, log_p_ut = policy(xt, **policy_kwargs)
+            
+            ut, log_p_ut = policy.compute(xt, stochastic=sample)
             us.append(ut)
             log_p_us.append(log_p_ut)
 
@@ -379,8 +382,8 @@ class SACSVGAgent(RLAgent):
 
         # Actor predicts the action to take based on the current state
         # Though in SAC it actually predicts the distribution of actions
-        # self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
-        self.replaced_actor = Actor(self._state_dim, self._action_dim, 512, 4, log_std_bounds=[-5, 2]).to(self.device)
+        self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
+        # self.replaced_actor = Actor(self._state_dim, self._action_dim, 512, 4, log_std_bounds=[-5, 2]).to(self.device)
         # Establish the target networks
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
         self.target_critic_2 = copy.deepcopy(self.critic_2).to(self.device)
@@ -404,7 +407,7 @@ class SACSVGAgent(RLAgent):
         # Optimisers
         self.opt_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=1e-4)
         self.opt_critic_2 = torch.optim.Adam(self.critic_2.parameters(), lr=1e-4)
-        self.opt_actor = torch.optim.Adam(self.replaced_actor.parameters(), lr=1e-4)
+        self.opt_actor = torch.optim.Adam(self.actor.parameters(), lr=1e-4)
         self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=1e-4)
 
         self.opt_rewards = torch.optim.Adam(self.reward_model.parameters(), lr=1e-3)
@@ -420,7 +423,7 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 10000
+        self.warmup_steps = 1025
 
     @property
     def alpha(self):
@@ -430,8 +433,8 @@ class SACSVGAgent(RLAgent):
         states = states.unsqueeze(0)
 
         with torch.no_grad():
-            # action = self.actor.compute_actions(states, stochastic=False)
-            action, _, _ = self.replaced_actor(states, compute_pi=False, compute_log_pi=False)
+            action = self.actor.compute_actions(states, stochastic=False)
+            # action, _, _ = self.replaced_actor(states, compute_pi=False, compute_log_pi=False)
             
         return action.detach().cpu().numpy()[0]
 
@@ -439,8 +442,8 @@ class SACSVGAgent(RLAgent):
         states = states.unsqueeze(0)
 
         with torch.no_grad():
-            #action = self.actor.compute_actions(states, stochastic=True)
-            _, action, _ = self.replaced_actor(states, compute_log_pi=False)
+            action = self.actor.compute_actions(states, stochastic=True)
+            # _, action, _ = self.replaced_actor(states, compute_log_pi=False)
 
         return action.detach().cpu().numpy()[0]
 
@@ -455,8 +458,8 @@ class SACSVGAgent(RLAgent):
 
     def update_actor_and_alpha(self, states):
         if self._steps < self.warmup_steps and False:
-            #actor_actions, log_probs = self.actor.compute(states)
-            _, actor_actions, log_probs = self.replaced_actor(states)
+            actor_actions, log_probs = self.actor.compute(states)
+            # _, actor_actions, log_probs = self.replaced_actor(states)
             real_input = torch.cat([states, actor_actions], dim=-1)
 
             # See what the critics think to the actor's prediction of the next action
@@ -467,7 +470,7 @@ class SACSVGAgent(RLAgent):
             actor_loss = (self.alpha.detach() * log_probs - min_Q).mean()
         elif self._steps > self.warmup_steps:
             # Unroll from the dynamics using the initial states
-            predicted_states, policy_actions, log_probs = self.dynamics.unroll_policy(states, self.replaced_actor)
+            predicted_states, policy_actions, log_probs = self.dynamics.unroll_policy(states, self.actor)
             
             # Now we need the rewards at each state, quickest way is to join and pass through reward model
             # Note need to unsqueeze states since predicted_states has format [timestep, batch, ...]
@@ -551,8 +554,8 @@ class SACSVGAgent(RLAgent):
         # Compute Q^(target)_theta(x_t, u_t)
         with torch.no_grad():
             # V_theta_frozen(x_[t+1])
-            #target_actions, log_probs = self.actor.compute(next_states)
-            _, target_actions, log_probs = self.replaced_actor(next_states, compute_pi=True, compute_log_pi=True)
+            target_actions, log_probs = self.actor.compute(next_states)
+            #_, target_actions, log_probs = self.replaced_actor(next_states, compute_pi=True, compute_log_pi=True)
             target_input = torch.cat([next_states, target_actions], dim=-1)
 
             # Calculate both critic Qs and then take the min

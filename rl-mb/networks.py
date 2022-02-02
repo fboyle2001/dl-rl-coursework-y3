@@ -71,7 +71,7 @@ class Actor(nn.Sequential):
 
 class GaussianActor(nn.Module):
     def __init__(self, state_dims: int, action_dims: int, device: Union[str, torch.device], connected_size: int = 512,
-                 sigma_upper_bound: float = 8, action_scale: float = 1, action_offset: float = 0):
+                 depth: int = 4, sigma_upper_bound: float = 8, action_scale: float = 1, action_offset: float = 0):
         """
         The Gaussian Actor takes in a state and predicts the parameters of
         a Normal distribution for each dimension in the action dimensions.
@@ -103,8 +103,9 @@ class GaussianActor(nn.Module):
         print(self._log_sigma_lower_bound)
         print(self._log_sigma_upper_bound)
 
-        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size, connected_size, connected_size], output_activation=None).to(self.device)
+        self.layers = create_fully_connected_network(state_dims, action_dims * 2, [connected_size for _ in range(depth)], output_activation=None).to(self.device)
 
+        print("GAUSSIAN ACTOR")
         print(self.layers)
 
     def forward(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
