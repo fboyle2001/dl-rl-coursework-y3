@@ -376,6 +376,108 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
         raise NotImplementedError("Trajectories are unsupported for this buffer")
 
+# https://pswww.slac.stanford.edu/svn-readonly/psdmrepo/RunSummary/trunk/src/welford.py
+class Welford(object):
+    """Knuth implementation of Welford algorithm.
+    """
+
+    def __init__(self, x=None):
+        self._K = np.float64(0.)
+        self.n = np.float64(0.)
+        self._Ex = np.float64(0.)
+        self._Ex2 = np.float64(0.)
+        self.shape = None
+        self._min = None
+        self._max = None
+        self._init = False
+        self.__call__(x)
+
+    def add_data(self, x):
+        """Add data.
+        """
+        if x is None:
+            return
+
+        x = np.array(x)
+        self.n += 1.
+        if not self._init:
+            self._init = True
+            self._K = x
+            self._min = x
+            self._max = x
+            self.shape = x.shape
+        else:
+            self._min = np.minimum(self._min, x)#  type: ignore
+            self._max = np.maximum(self._max, x)#  type: ignore
+
+        self._Ex += (x - self._K) / self.n
+        self._Ex2 += (x - self._K) * (x - self._Ex)
+        self._K = self._Ex
+
+    def __call__(self, x):
+        self.add_data(x)
+
+    def max(self):
+        """Max value for each element in array.
+        """
+        return self._max
+
+    def min(self):
+        """Min value for each element in array.
+        """
+        return self._min
+
+    def mean(self, axis=None):
+        """Compute the mean of accumulated data.
+           Parameters
+           ----------
+           axis: None or int or tuple of ints, optional
+                Axis or axes along which the means are computed. The default is to
+                compute the mean of the flattened array.
+        """
+        if self.n < 1:
+            return None
+
+        val = np.array(self._K + self._Ex / np.float64(self.n))
+        if axis:
+            return val.mean(axis=axis)
+        else:
+            return val
+
+    def sum(self, axis=None):
+        """Compute the sum of accumulated data.
+        """
+        return self.mean(axis=axis)*self.n # type: ignore
+
+    def var(self):
+        """Compute the variance of accumulated data.
+        """
+        if self.n <= 1:
+            return  np.zeros(self.shape) #  type: ignore
+
+        val = np.array((self._Ex2 - (self._Ex*self._Ex)/np.float64(self.n)) / np.float64(self.n-1.))
+
+        return val
+
+    def std(self):
+        """Compute the standard deviation of accumulated data.
+        """
+        return np.sqrt(self.var())
+
+#    def __add__(self, val):
+#        """Add two Welford objects.
+#        """
+#
+
+    def __str__(self):
+        if self._init:
+            return "{} +- {}".format(self.mean(), self.std())
+        else:
+            return "{}".format(self.shape)
+
+    def __repr__(self):
+        return "< Welford: {:} >".format(str(self))
+
 class MultiStepReplayBuffer:
     def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
         self.device = device
@@ -399,9 +501,15 @@ class MultiStepReplayBuffer:
         self.pointer = 0
         self.count = 0
         self.sequence_length = 0
+        self.welford = Welford()
+        self.normalise = False
 
     def store(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, true_done: bool, done: bool) -> None:
         self.sequence_length += 1
+
+        if self.normalise:
+            # Lets normalise everything as it comes in
+            self.welford.add_data(state)
 
         true_not_done = not true_done
         not_done = not done
@@ -420,14 +528,30 @@ class MultiStepReplayBuffer:
         self.count = min(self.count + 1, self.max_size)
         self.pointer = (self.pointer + 1) % self.max_size
 
+    def get_obs_stats(self):
+        MIN_STD = 1e-1
+        MAX_STD = 10
+        mean = self.welford.mean()
+        std = self.welford.std()
+        std[std < MIN_STD] = MIN_STD
+        std[std > MAX_STD] = MAX_STD
+        return mean, std
+
     def sample(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         random_sample = np.random.choice(self.count, size=batch_size)
+        states = self.states[random_sample]
+        next_states = self.next_states[random_sample]
+
+        if self.normalise:
+            mu, sigma = self.get_obs_stats()
+            states = (states - mu) / sigma
+            next_states = (next_states - mu) / sigma
 
         return (
-            torch.tensor(self.states[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(states, dtype=torch.float32).to(self.device),
             torch.tensor(self.actions[random_sample], dtype=torch.float32).to(self.device),
             torch.tensor(self.rewards[random_sample], dtype=torch.float32).to(self.device),
-            torch.tensor(self.next_states[random_sample], dtype=torch.float32).to(self.device),
+            torch.tensor(next_states, dtype=torch.float32).to(self.device),
             torch.tensor(self.true_not_dones[random_sample], dtype=torch.float32).to(self.device),
             torch.tensor(self.not_dones[random_sample], dtype=torch.float32).to(self.device)
         )
@@ -444,8 +568,10 @@ class MultiStepReplayBuffer:
         timestepped_actions = []
         timestepped_rewards = []
 
+        mu, sigma = self.get_obs_stats() if self.normalise else(0, 1)
+
         for offset in range(0, sequence_length):
-            time_states = self.states[selected_final_indices - sequence_length + offset]
+            time_states = (self.states[selected_final_indices - sequence_length + offset] - mu) / sigma
             timestepped_states.append(time_states)
             time_actions = self.actions[selected_final_indices - sequence_length + offset]
             timestepped_actions.append(time_actions)

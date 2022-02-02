@@ -369,7 +369,7 @@ class SeqDx(nn.Module):
 
 class SACSVGAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int]):
-        super().__init__("SACSVG", env_name, device, video_every)
+        super().__init__("SVGSafety", env_name, device, video_every)
 
         self.replay_buffer = buffers.MultiStepReplayBuffer(self._state_dim, self._action_dim, int(1e6), self.device)
 
@@ -420,7 +420,7 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 10000
+        self.warmup_steps = 1025
 
     @property
     def alpha(self):
@@ -532,6 +532,7 @@ class SACSVGAgent(RLAgent):
 
         self.opt_actor.zero_grad()
         actor_loss.backward()
+        nn.utils.clip_grad_norm_(self.replaced_actor.parameters(), 1.0) #type: ignore
         self.opt_actor.step()
 
         # Now update alpha (do it here since we have everything we need so it's efficient)
@@ -543,6 +544,7 @@ class SACSVGAgent(RLAgent):
 
         self.opt_alpha.zero_grad()
         alpha_loss.backward()
+        nn.utils.clip_grad_norm_([self.log_alpha], 1.0) # type: ignore
         self.opt_alpha.step()
 
         self._writer.add_scalar("stats/alpha", self.alpha.detach().cpu(), self._steps)
@@ -576,8 +578,8 @@ class SACSVGAgent(RLAgent):
         self._writer.add_scalar("stats/critic_2", actual_Q2.detach().cpu().mean().item(), self._steps)
 
         # Take the losses as MSE loss since we are taking the expectation
-        critic_1_loss = F.mse_loss(actual_Q1, target_Q)
-        critic_2_loss = F.mse_loss(actual_Q2, target_Q)
+        critic_1_loss = 0.5 * F.mse_loss(actual_Q1, target_Q)
+        critic_2_loss = 0.5 * F.mse_loss(actual_Q2, target_Q)
 
         self._writer.add_scalar("loss/q1", critic_1_loss.detach().cpu().item(), self._steps)
         self._writer.add_scalar("loss/q2", critic_2_loss.detach().cpu().item(), self._steps)
@@ -585,10 +587,12 @@ class SACSVGAgent(RLAgent):
         # Optimise
         self.opt_critic_1.zero_grad()
         critic_1_loss.backward()
+        nn.utils.clip_grad_norm_(self.critic_1.parameters(), 1.0) #type: ignore
         self.opt_critic_1.step()
         
         self.opt_critic_2.zero_grad()
         critic_2_loss.backward()
+        nn.utils.clip_grad_norm_(self.critic_2.parameters(), 1.0) #type: ignore
         self.opt_critic_2.step()
 
     def update_rewards(self, states, actions, rewards):
