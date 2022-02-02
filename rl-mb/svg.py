@@ -318,7 +318,7 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 1025
+        self.warmup_steps = 10000
 
     @property
     def alpha(self):
