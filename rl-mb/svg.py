@@ -397,7 +397,7 @@ class SACSVGAgent(RLAgent):
         # self.dynamics = networks.GRUDynamicsModel(self._state_dim + self._action_dim, self._state_dim, horizon=3,
         #                             device=self.device, clip_grad=1.0, lr=1e-3).to(self.device)
         print(self.env.spec.id) # type: ignore
-        self.dynamics = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, 1, 3, self.device, True, 1.0, 512, 2, 1, 512, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
+        self.dynamics = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, 1, 3, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
         self.termination_model = networks.TerminationModel(self._state_dim + self._action_dim, 1).to(self.device)
         self.reward_model = networks.RewardModel(self._state_dim + self._action_dim, 1).to(self.device)
 
