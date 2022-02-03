@@ -545,7 +545,7 @@ class SACSVGAgent(RLAgent):
         # Now update alpha (do it here since we have everything we need so it's efficient)
         # Optimise over the first timestep i.e. those sampled directly from D only
         # Remember ~= expectation so take the mean
-        alpha_loss = (-self.alpha * (log_probs[0] * self.target_entropy).detach()).mean()
+        alpha_loss = (-self.alpha * (log_probs[0] - self.target_entropy).detach()).mean()
 
         self._writer.add_scalar("loss/alpha", alpha_loss.detach().cpu(), self._steps)
 

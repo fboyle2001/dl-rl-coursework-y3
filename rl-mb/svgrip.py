@@ -802,7 +802,7 @@ class SVGDirectRipAgent(RLAgent):
 
         self.warmup_steps = 10000
 
-        self.temp = LearnTemp(0.1, 100000, 2, -self._action_dim, 0.5, False, 1e-4, self.device)
+        self.temp = LearnTemp(0.1, 80000, 2, -self._action_dim, 0.5, False, 1e-4, self.device)
         self.dx = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, self.action_range, self.horizon, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
 
         self.rew = mlp(
