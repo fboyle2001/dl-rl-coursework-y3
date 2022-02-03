@@ -479,7 +479,7 @@ class Welford(object):
         return "< Welford: {:} >".format(str(self))
 
 class MultiStepReplayBuffer:
-    def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
+    def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device], normalise: bool = False):
         self.device = device
 
         self._state_dim = state_dim
@@ -502,7 +502,7 @@ class MultiStepReplayBuffer:
         self.count = 0
         self.sequence_length = 0
         self.welford = Welford()
-        self.normalise = False
+        self.normalise = normalise
 
     def store(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, true_done: bool, done: bool) -> None:
         self.sequence_length += 1

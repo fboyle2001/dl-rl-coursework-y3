@@ -368,10 +368,10 @@ class SeqDx(nn.Module):
         return obs_loss.item()
 
 class SACSVGAgent(RLAgent):
-    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int]):
+    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = False):
         super().__init__("SVGSafety", env_name, device, video_every)
 
-        self.replay_buffer = buffers.MultiStepReplayBuffer(self._state_dim, self._action_dim, int(1e6), self.device)
+        self.replay_buffer = buffers.MultiStepReplayBuffer(self._state_dim, self._action_dim, int(1e6), self.device, normalise=normalise)
 
         # Critics predicts the reward of taking action A from state S
         self.critic_1 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
@@ -421,7 +421,7 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 10000
+        self.warmup_steps = 1025
 
     # @property
     # def alpha(self):

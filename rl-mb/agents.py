@@ -13,6 +13,7 @@ import buffers
 import networks
 import random
 import fbbuffer
+from gym import spaces
 
 class RLAgent(abc.ABC):
     def __init__(self, agent_name: str, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
