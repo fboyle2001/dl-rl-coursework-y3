@@ -17,6 +17,8 @@ import numpy as np
 import torch.nn.functional as F
 import math
 from torch import distributions as pyd
+import gym
+import wrappers
 
 ## STOLEN FUNCTIONS
 def get_params(models):
@@ -371,6 +373,9 @@ class SACSVGAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = False):
         super().__init__("SVGSafety", env_name, device, video_every)
 
+        # Try normalisation:
+        self.env = gym.wrappers.RescaleAction(self.env, -1., 1.)
+
         self.replay_buffer = buffers.MultiStepReplayBuffer(self._state_dim, self._action_dim, int(1e6), self.device, normalise=normalise)
 
         # Critics predicts the reward of taking action A from state S
@@ -455,7 +460,7 @@ class SACSVGAgent(RLAgent):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def update_actor_and_alpha(self, states):
-        if self._steps < self.warmup_steps and False:
+        if self._steps < self.warmup_steps:
             #actor_actions, log_probs = self.actor.compute(states)
             _, actor_actions, log_probs = self.replaced_actor(states)
             real_input = torch.cat([states, actor_actions], dim=-1)
@@ -465,7 +470,7 @@ class SACSVGAgent(RLAgent):
             real_Q2 = self.critic_2(real_input)
             min_Q = torch.min(real_Q1, real_Q2)
 
-            actor_loss = (self.alpha.detach() * log_probs - min_Q).mean()
+            actor_loss = (self.alpha * log_probs - min_Q).mean()
         elif self._steps > self.warmup_steps:
             # Unroll from the dynamics using the initial states
             predicted_states, policy_actions, log_probs = self.dynamics.unroll_policy(states, self.replaced_actor)
