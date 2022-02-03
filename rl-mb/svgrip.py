@@ -766,7 +766,7 @@ class RescaleAction(gym.ActionWrapper):
         return action
 
 class SVGDirectRipAgent(RLAgent):
-    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = False):
+    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = True):
         super().__init__("SVGDirectRip", env_name, device, video_every, 50000, True, True, 42)
 
         if normalise:
@@ -802,7 +802,7 @@ class SVGDirectRipAgent(RLAgent):
 
         self.warmup_steps = 10000
 
-        self.temp = LearnTemp(0.1, self.num_train_steps, 0, -self._action_dim, 1, False, 1e-4, self.device)
+        self.temp = LearnTemp(0.1, 100000, 2, -self._action_dim, 0.5, False, 1e-4, self.device)
         self.dx = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, self.action_range, self.horizon, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
 
         self.rew = mlp(
