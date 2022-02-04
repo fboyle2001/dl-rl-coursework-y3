@@ -293,9 +293,12 @@ class LearnTemp:
         return self.log_alpha.exp()
 
     def update(self, first_log_p, writer, step):
-        t = (1.-step/self.max_steps)**self.entr_decay_factor
-        self.targ_entr = (self.init_targ_entr - self.final_targ_entr)*t + self.final_targ_entr
-
+        if step < self.max_steps:
+            t = (1.-step/self.max_steps)**self.entr_decay_factor
+            self.targ_entr = (self.init_targ_entr - self.final_targ_entr)*t + self.final_targ_entr
+        else:
+            self.targ_entr = self.final_targ_entr
+            
         self.log_alpha_opt.zero_grad()
         alpha_loss = (self.alpha * (-first_log_p - self.targ_entr).detach()).mean()
         alpha_loss.backward()
@@ -766,8 +769,10 @@ class RescaleAction(gym.ActionWrapper):
         return action
 
 class SVGDirectRipAgent(RLAgent):
-    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = True):
+    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = False):
         super().__init__("SVGDirectRip", env_name, device, video_every, 50000, True, True, 42)
+
+        print("Normalised", normalise)
 
         if normalise:
             self.env = RescaleAction(self.env, -1., 1.)
@@ -802,7 +807,7 @@ class SVGDirectRipAgent(RLAgent):
 
         self.warmup_steps = 10000
 
-        self.temp = LearnTemp(0.1, 80000, 2, -self._action_dim, 0.5, False, 1e-4, self.device)
+        self.temp = LearnTemp(0.1, 100000, 2, -self._action_dim, 0.5, False, 1e-4, self.device)
         self.dx = SeqDx(self.env.spec.id, self._state_dim, self._action_dim, self.action_range, self.horizon, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
 
         self.rew = mlp(
