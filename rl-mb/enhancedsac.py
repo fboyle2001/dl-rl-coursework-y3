@@ -4,14 +4,15 @@ import networks
 import torch 
 import copy
 import numpy as np
+import fbbuffer
 import buffers
 import torch.nn.functional as F
 
-class EnhancedSACAgent(RLAgent):
+class StandardSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 1,
-                        warmup_steps: int = 10000, target_update_interval: int = 1):
+                        warmup_steps: int = 1000, target_update_interval: int = 1):
         """
         SAC Implementation
         """
@@ -37,7 +38,8 @@ class EnhancedSACAgent(RLAgent):
 
         # Alpha can get very close to 0 so for the same reason as in
         # the GaussianActor we optimise ln(alpha) instead for numerical stability
-        self.log_alpha = torch.tensor(0.2, requires_grad=True, device=self.device)
+        self.log_alpha = torch.zeros(1, requires_grad=True).to(self.device)
+        self.alpha = self.log_alpha.exp() # Or 0.2?
 
         # Optimisers
         self.opt_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=lr)
@@ -53,23 +55,19 @@ class EnhancedSACAgent(RLAgent):
         self.warmup_steps = warmup_steps
         self.gradient_steps = gradient_steps
     
-    @property
-    def alpha(self):
-        return self.log_alpha.exp()
-
-    def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
-        states = states.unsqueeze(0)
+    def sample_evaluation_action(self, states: np.ndarray) -> np.ndarray:
+        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(states, stochastic=False)
+            action = self.actor.compute_actions(state, stochastic=False)
 
         return action.detach().cpu().numpy()[0]
 
-    def sample_regular_action(self, states: torch.Tensor) -> np.ndarray:
-        states = states.unsqueeze(0)
+    def sample_regular_action(self, states: np.ndarray) -> np.ndarray:
+        state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(states, stochastic=True)
+            action = self.actor.compute_actions(state, stochastic=True)
 
         return action.detach().cpu().numpy()[0]
 
@@ -90,13 +88,13 @@ class EnhancedSACAgent(RLAgent):
 
         # Parameters of the target critics are frozen so don't update them!
         with torch.no_grad():
-            target_actions, log_probs = self.actor.compute(buffer_sample.next_states)
+            target_actions = self.actor.compute_actions(buffer_sample.next_states)
             target_input = torch.cat([buffer_sample.next_states, target_actions], dim=-1)
 
             # Calculate both critic Qs and then take the min
             target_Q1 = self.target_critic_1(target_input)
             target_Q2 = self.target_critic_2(target_input)
-            min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
+            min_Q_target = torch.min(target_Q1, target_Q2)
 
             # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
             target_Q = buffer_sample.rewards.unsqueeze(1) + buffer_sample.terminals.unsqueeze(1) * self.gamma * min_Q_target 
@@ -168,6 +166,9 @@ class EnhancedSACAgent(RLAgent):
         alpha_loss.backward()
         self.opt_alpha.step()
 
+        # Make sure to update alpha now we've updated log_alpha
+        self.alpha = self.log_alpha.exp()
+
         self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
 
         # Update the frozen critics
@@ -181,7 +182,7 @@ class EnhancedSACAgent(RLAgent):
 
         for param, target_param in zip(self.critic_2.parameters(), self.target_critic_2.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-    
+
     def run(self) -> None:
         while self._episodes < self._max_episodes:
             self._episodes += 1
@@ -194,7 +195,7 @@ class EnhancedSACAgent(RLAgent):
                 if self._steps < self.warmup_steps:
                     action = self.env.action_space.sample()
                 else:
-                    action = self.sample_regular_action(torch.tensor(state, device=self.device))
+                    action = self.sample_regular_action(state)
             
                 for _ in range(self.gradient_steps):
                     self.train_policy()
@@ -221,7 +222,6 @@ class EnhancedSACAgent(RLAgent):
                     done = False
 
                     while not done:
-                        state = torch.tensor(state, device=self.device)
                         action = self.sample_evaluation_action(state)
                         next_state, reward, done, _ = self.env.step(action)
                         ep_reward += reward
@@ -232,3 +232,6 @@ class EnhancedSACAgent(RLAgent):
                 avg_reward /= eval_episodes
                 self._writer.add_scalar("stats/eval_reward", avg_reward, self.episodes)
                 self.log(f"[EVAL] Average reward over {eval_episodes} was {avg_reward}")
+
+s = StandardSACAgent("Pendulum-v1", "cpu", None)
+s.run()
