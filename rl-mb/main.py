@@ -4,6 +4,8 @@ import torch
 import os
 import svg
 import svgrip
+import mbporip
+import enhancedsac
 
 def main():
     parser = argparse.ArgumentParser()
@@ -16,6 +18,8 @@ def main():
 
     agents.AGENT_MAP["TrueSVG"] = svg.SACSVGAgent
     agents.AGENT_MAP["RippedSVG"] = svgrip.SVGDirectRipAgent
+    agents.AGENT_MAP["RippedMBPO"] = mbporip.RippedMBPOAgent
+    agents.AGENT_MAP["EnhancedSAC"] = enhancedsac.EnhancedSACAgent
 
     assert args.agent and args.agent in agents.AGENT_MAP.keys(), f"{args.agent} is an invalid agent type"
 

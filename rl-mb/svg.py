@@ -370,12 +370,17 @@ class SeqDx(nn.Module):
         return obs_loss.item()
 
 class SACSVGAgent(RLAgent):
-    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = False):
+    def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int], normalise: bool = True):
         super().__init__("SVGSafety", env_name, device, video_every)
 
         # Try normalisation:
         self.env = gym.wrappers.RescaleAction(self.env, -1., 1.)
+        self.env = gym.wrappers.ClipAction(self.env) # type: ignore
+        # self.env = gym.wrappers.NormalizeObservation(self.env)
+        self.env = gym.wrappers.NormalizeReward(self.env)
 
+
+        print(f"Normalisation: {normalise}")
         self.replay_buffer = buffers.MultiStepReplayBuffer(self._state_dim, self._action_dim, int(1e6), self.device, normalise=normalise)
 
         # Critics predicts the reward of taking action A from state S
@@ -396,8 +401,8 @@ class SACSVGAgent(RLAgent):
 
         # Alpha can get very close to 0 so for the same reason as in
         # the GaussianActor we optimise ln(alpha) instead for numerical stability
-        # self.log_alpha = torch.tensor(np.log(0.1), requires_grad=True, device=self.device)
-        self.alpha = 0.2
+        self.log_alpha = torch.tensor(np.log(1.), requires_grad=True, device=self.device)
+        # self.alpha = 0.2
 
         # World Model
         # self.dynamics = networks.GRUDynamicsModel(self._state_dim + self._action_dim, self._state_dim, horizon=3,
@@ -411,7 +416,7 @@ class SACSVGAgent(RLAgent):
         self.opt_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=1e-4)
         self.opt_critic_2 = torch.optim.Adam(self.critic_2.parameters(), lr=1e-4)
         self.opt_actor = torch.optim.Adam(self.replaced_actor.parameters(), lr=1e-4)
-        # self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=1e-4)
+        self.opt_alpha = torch.optim.Adam([self.log_alpha], lr=1e-4)
 
         self.opt_rewards = torch.optim.Adam(self.reward_model.parameters(), lr=1e-3)
         self.opt_terminations = torch.optim.Adam(self.termination_model.parameters(), lr=1e-3)
@@ -426,11 +431,11 @@ class SACSVGAgent(RLAgent):
         self.gamma_horizon = torch.tensor([self.gamma ** i for i in range(self.horizon)]).to(device)
         self.multi_step_batch_size = 1024
 
-        self.warmup_steps = 1025
+        self.warmup_steps = 10000
 
-    # @property
-    # def alpha(self):
-    #     return self.log_alpha.exp()
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
 
     def sample_evaluation_action(self, states: torch.Tensor) -> np.ndarray:
         states = states.unsqueeze(0)
@@ -518,8 +523,8 @@ class SACSVGAgent(RLAgent):
 
             # See J_(pi, alpha)^[SVG](D_s) this is the internal expectation expression
             # actually its the first expectation fully as states ~ D_s as input
-            # rewards -= self.alpha.detach() * log_probs
-            rewards -= self.alpha * log_probs
+            rewards -= self.alpha.detach() * log_probs
+            # rewards -= self.alpha * log_probs
 
             # Discount rewards the further in time we go
             rewards *= self.gamma_horizon.unsqueeze(1)
@@ -539,23 +544,23 @@ class SACSVGAgent(RLAgent):
 
         self.opt_actor.zero_grad()
         actor_loss.backward()
-        nn.utils.clip_grad_norm_(self.replaced_actor.parameters(), 1.0) #type: ignore
+        # nn.utils.clip_grad_norm_(self.replaced_actor.parameters(), 1.0) #type: ignore
         self.opt_actor.step()
 
         # Now update alpha (do it here since we have everything we need so it's efficient)
         # Optimise over the first timestep i.e. those sampled directly from D only
         # Remember ~= expectation so take the mean
-        alpha_loss = (-self.alpha * (log_probs[0] - self.target_entropy).detach()).mean()
+        alpha_loss = (-self.alpha * (log_probs[0] + self.target_entropy).detach()).mean()
 
         self._writer.add_scalar("loss/alpha", alpha_loss.detach().cpu(), self._steps)
 
-        # self.opt_alpha.zero_grad()
-        # alpha_loss.backward()
+        self.opt_alpha.zero_grad()
+        alpha_loss.backward()
         # nn.utils.clip_grad_norm_([self.log_alpha], 1.0) # type: ignore
-        # self.opt_alpha.step()
+        self.opt_alpha.step()
 
-        # self._writer.add_scalar("stats/alpha", self.alpha.detach().cpu(), self._steps)
-        self._writer.add_scalar("stats/alpha", self.alpha, self._steps)
+        self._writer.add_scalar("stats/alpha", self.alpha.detach().cpu(), self._steps)
+        # self._writer.add_scalar("stats/alpha", self.alpha, self._steps)
 
     def update_critics(self, states, actions, rewards, next_states, not_dones):
         # Compute Q^(target)_theta(x_t, u_t)
@@ -568,8 +573,8 @@ class SACSVGAgent(RLAgent):
             # Calculate both critic Qs and then take the min
             target_Q1 = self.target_critic_1(target_input)
             target_Q2 = self.target_critic_2(target_input)
-            # min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
-            min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha * log_probs
+            min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
+            # min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha * log_probs
 
             # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
             # TODO: Maybe see what happens when we remove the unsqueeze?
@@ -596,12 +601,12 @@ class SACSVGAgent(RLAgent):
         # Optimise
         self.opt_critic_1.zero_grad()
         critic_1_loss.backward()
-        nn.utils.clip_grad_norm_(self.critic_1.parameters(), 1.0) #type: ignore
+        # nn.utils.clip_grad_norm_(self.critic_1.parameters(), 1.0) #type: ignore
         self.opt_critic_1.step()
         
         self.opt_critic_2.zero_grad()
         critic_2_loss.backward()
-        nn.utils.clip_grad_norm_(self.critic_2.parameters(), 1.0) #type: ignore
+        # nn.utils.clip_grad_norm_(self.critic_2.parameters(), 1.0) #type: ignore
         self.opt_critic_2.step()
 
     def update_rewards(self, states, actions, rewards):
@@ -729,5 +734,3 @@ class SACSVGAgent(RLAgent):
                 avg_reward /= eval_episodes
                 self._writer.add_scalar("stats/eval_reward", avg_reward, self.episodes)
                 self.log(f"[EVAL] Average reward over {eval_episodes} was {avg_reward}")
-
-            
