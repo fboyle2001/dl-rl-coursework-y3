@@ -8,9 +8,111 @@ import copy
 
 from sortedcontainers import SortedSet
 
+# https://pswww.slac.stanford.edu/svn-readonly/psdmrepo/RunSummary/trunk/src/welford.py
+class Welford(object):
+    """Knuth implementation of Welford algorithm.
+    """
+
+    def __init__(self, x=None):
+        self._K = np.float64(0.)
+        self.n = np.float64(0.)
+        self._Ex = np.float64(0.)
+        self._Ex2 = np.float64(0.)
+        self.shape = None
+        self._min = None
+        self._max = None
+        self._init = False
+        self.__call__(x)
+
+    def add_data(self, x):
+        """Add data.
+        """
+        if x is None:
+            return
+
+        x = np.array(x)
+        self.n += 1.
+        if not self._init:
+            self._init = True
+            self._K = x
+            self._min = x
+            self._max = x
+            self.shape = x.shape
+        else:
+            self._min = np.minimum(self._min, x)
+            self._max = np.maximum(self._max, x)
+
+        self._Ex += (x - self._K) / self.n
+        self._Ex2 += (x - self._K) * (x - self._Ex)
+        self._K = self._Ex
+
+    def __call__(self, x):
+        self.add_data(x)
+
+    def max(self):
+        """Max value for each element in array.
+        """
+        return self._max
+
+    def min(self):
+        """Min value for each element in array.
+        """
+        return self._min
+
+    def mean(self, axis=None):
+        """Compute the mean of accumulated data.
+           Parameters
+           ----------
+           axis: None or int or tuple of ints, optional
+                Axis or axes along which the means are computed. The default is to
+                compute the mean of the flattened array.
+        """
+        if self.n < 1:
+            return None
+
+        val = np.array(self._K + self._Ex / np.float64(self.n))
+        if axis:
+            return val.mean(axis=axis)
+        else:
+            return val
+
+    def sum(self, axis=None):
+        """Compute the sum of accumulated data.
+        """
+        return self.mean(axis=axis)*self.n
+
+    def var(self):
+        """Compute the variance of accumulated data.
+        """
+        if self.n <= 1:
+            return  np.zeros(self.shape)
+
+        val = np.array((self._Ex2 - (self._Ex*self._Ex)/np.float64(self.n)) / np.float64(self.n-1.))
+
+        return val
+
+    def std(self):
+        """Compute the standard deviation of accumulated data.
+        """
+        return np.sqrt(self.var())
+
+#    def __add__(self, val):
+#        """Add two Welford objects.
+#        """
+#
+
+    def __str__(self):
+        if self._init:
+            return "{} +- {}".format(self.mean(), self.std())
+        else:
+            return "{}".format(self.shape)
+
+    def __repr__(self):
+        return "< Welford: {:} >".format(str(self))
+
 class ReplayBuffer(object):
     """Buffer to store environment transitions."""
-    def __init__(self, obs_shape, action_shape, capacity, device):
+    def __init__(self, obs_shape, action_shape, capacity, device, normalize_obs):
         self.obs_shape = obs_shape
         self.action_shape = action_shape
         self.capacity = capacity
@@ -23,7 +125,11 @@ class ReplayBuffer(object):
         self.global_idx = 0
         self.global_last_save = 0
 
-        self.normalize_obs = False
+        self.normalize_obs = normalize_obs
+
+        if normalize_obs:
+            assert not self.pixels
+            self.welford = Welford()
 
     def __getstate__(self):
         d = copy.copy(self.__dict__)
@@ -60,6 +166,16 @@ class ReplayBuffer(object):
     def __len__(self):
         return self.capacity if self.full else self.idx
 
+    def get_obs_stats(self):
+        assert not self.pixels
+        MIN_STD = 1e-1
+        MAX_STD = 10
+        mean = self.welford.mean()
+        std = self.welford.std()
+        std[std < MIN_STD] = MIN_STD
+        std[std > MAX_STD] = MAX_STD
+        return mean, std
+
     def add(self, obs, action, reward, next_obs, done, done_no_max):
         # For saving
         self.payload.append((
@@ -68,11 +184,14 @@ class ReplayBuffer(object):
             not done, not done_no_max
         ))
 
+        if self.normalize_obs:
+            self.welford.add_data(obs)
+
         # if self.full and not self.not_dones[self.idx]:
         if done:
-            self.done_idxs.add(self.idx) # type: ignore
+            self.done_idxs.add(self.idx)
         elif self.full:
-            self.done_idxs.discard(self.idx)  # type: ignore
+            self.done_idxs.discard(self.idx)
 
         np.copyto(self.obses[self.idx], obs)
         np.copyto(self.actions[self.idx], action)
@@ -92,6 +211,11 @@ class ReplayBuffer(object):
 
         obses = self.obses[idxs]
         next_obses = self.next_obses[idxs]
+
+        if self.normalize_obs:
+            mu, sigma = self.get_obs_stats()
+            obses = (obses-mu)/sigma
+            next_obses = (next_obses-mu)/sigma
 
         obses = torch.as_tensor(obses, device=self.device).float()
         actions = torch.as_tensor(self.actions[idxs], device=self.device)
@@ -115,7 +239,7 @@ class ReplayBuffer(object):
 
         # raw here means the "coalesced" indices that map to valid
         # indicies that are more than T steps away from a done
-        done_idxs_sorted = np.array(list(self.done_idxs) + [last_idx])  # type: ignore
+        done_idxs_sorted = np.array(list(self.done_idxs) + [last_idx])
         n_done = len(done_idxs_sorted)
         done_idxs_raw = done_idxs_sorted - np.arange(1, n_done+1)*T
 
@@ -123,8 +247,8 @@ class ReplayBuffer(object):
             last_idx-(T+1)*n_done, size=batch_size,
             replace=True # for speed
         )
-        samples_raw = sorted(samples_raw)  # type: ignore
-        js = np.searchsorted(done_idxs_raw, samples_raw)  # type: ignore
+        samples_raw = sorted(samples_raw)
+        js = np.searchsorted(done_idxs_raw, samples_raw)
         offsets = done_idxs_raw[js] - samples_raw + T
         start_idxs = done_idxs_sorted[js] - offsets
 
@@ -139,6 +263,10 @@ class ReplayBuffer(object):
         obses = np.stack(obses)
         actions = np.stack(actions)
         rewards = np.stack(rewards).squeeze(2)
+
+        if self.normalize_obs:
+            mu, sigma = self.get_obs_stats()
+            obses = (obses-mu)/sigma
 
         obses = torch.as_tensor(obses, device=self.device).float()
         actions = torch.as_tensor(actions, device=self.device)

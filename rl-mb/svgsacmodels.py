@@ -205,6 +205,6 @@ class SeqDx(nn.Module):
             torch.nn.utils.clip_grad_norm_(params, self.clip_grad_norm) #type: ignore
         self.opt.step()
 
-        logger.log('train_model/obs_loss', obs_loss, step)
+        logger.add_scalar('train_model/obs_loss', obs_loss, step)
 
         return obs_loss.item()
