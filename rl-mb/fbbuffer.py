@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
+from tracemalloc import start
 import numpy as np
 import numpy.random as npr
 import torch
@@ -175,6 +176,71 @@ class ReplayBuffer(object):
         std[std < MIN_STD] = MIN_STD
         std[std > MAX_STD] = MAX_STD
         return mean, std
+
+    def bulk_add(self, obses, actions, rewards, next_obses, dones, done_no_maxes):
+        if obses.shape[0] == self.capacity:
+            self.obses = obses
+            self.actions = actions
+            self.rewards = rewards
+            self.next_obses = next_obses
+            self.not_dones = np.logical_not(dones)
+            self.not_dones_no_max = np.logical_not(done_no_maxes)
+            return
+
+        start_index = self.idx
+        end_index = (start_index + obses.shape[0]) % self.capacity
+        secondary_start_index = None
+        secondary_end_index = None
+
+        print(self.idx, start_index, end_index)
+
+        if end_index < start_index:
+            secondary_start_index = 0
+            secondary_end_index = end_index + 1
+            end_index = self.capacity - 1
+        
+        if self.normalize_obs:
+            self.welford.add_data(obses)
+
+        #if self.full:
+        for idx in range(start_index, end_index + 1):
+            self.done_idxs.discard(idx)
+        
+        if secondary_start_index is not None and secondary_end_index is not None:
+            for idx in range(secondary_start_index, secondary_end_index + 1):
+                self.done_idxs.discard(idx)
+        
+        done_idxs = np.where(dones == True)[0]
+
+        for done_idx in done_idxs:
+            self.done_idxs.add(done_idx)
+
+        if secondary_start_index is None:
+            self.obses[start_index : end_index] = obses
+            self.actions[start_index : end_index] = actions
+            self.rewards[start_index : end_index] = rewards
+            self.next_obses[start_index : end_index] = next_obses
+            self.not_dones[start_index : end_index] = np.logical_not(dones)
+            self.not_dones_no_max[start_index : end_index] = np.logical_not(done_no_maxes)
+        else:
+            self.obses[start_index : end_index] = obses[0 : end_index - start_index]
+            self.actions[start_index : end_index] = actions[0 : end_index - start_index]
+            self.rewards[start_index : end_index] = rewards[0 : end_index - start_index]
+            self.next_obses[start_index : end_index] = next_obses[0 : end_index - start_index]
+            self.not_dones[start_index : end_index] = np.logical_not(dones)[0 : end_index - start_index]
+            self.not_dones_no_max[start_index : end_index] = np.logical_not(done_no_maxes)[0 : end_index - start_index]
+
+            self.obses[secondary_start_index : secondary_end_index] = obses[end_index - start_index:]
+            self.actions[secondary_start_index : secondary_end_index] = actions[end_index - start_index:]
+            self.rewards[secondary_start_index : secondary_end_index] = rewards[end_index - start_index:]
+            self.next_obses[secondary_start_index : secondary_end_index] = next_obses[end_index - start_index:]
+            self.not_dones[secondary_start_index : secondary_end_index] = np.logical_not(dones)[end_index - start_index:]
+            self.not_dones_no_max[secondary_start_index : secondary_end_index] = np.logical_not(done_no_maxes)[end_index - start_index:]
+        
+        self.idx = (self.idx + obses.shape[0]) % self.capacity
+        self.global_idx += obses.shape[0]
+        self.full = self.full or secondary_start_index is not None
+        print(self.idx)
 
     def add(self, obs, action, reward, next_obs, done, done_no_max):
         # For saving

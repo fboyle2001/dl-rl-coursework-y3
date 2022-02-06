@@ -531,7 +531,7 @@ class RewardModel(nn.Sequential):
     """
     def __init__(self, input_size: int, output_size: int, connected_size: int = 512, hidden_count = 2):
         super().__init__(
-            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation="tanh")
+            *create_fully_connected_network(input_size, output_size, [connected_size for _ in range(hidden_count + 1)], output_activation=None)
         )
 
 class TerminationModel(nn.Sequential):

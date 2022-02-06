@@ -8,12 +8,13 @@ import fbbuffer
 import buffers
 import torch.nn.functional as F
 import svgsacmodels as ssm
+import svg
 
-class StandardSACAgent(RLAgent):
+class EnhancedSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 1,
-                        warmup_steps: int = 1025, target_update_interval: int = 1, normalize_obs: bool = False):
+                        warmup_steps: int = 10000, target_update_interval: int = 1, normalize_obs: bool = False):
         """
         SAC Implementation
         """
@@ -28,7 +29,8 @@ class StandardSACAgent(RLAgent):
 
         # Actor predicts the action to take based on the current state
         # Though in SAC it actually predicts the distribution of actions
-        self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
+        # self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
+        self.actor = svg.Actor(self._state_dim, self._action_dim, 512, 4, log_std_bounds=[-5, 2]).to(self.device)
 
         # Establish the target networks
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
@@ -55,6 +57,10 @@ class StandardSACAgent(RLAgent):
         self.dynamics = ssm.SeqDx(self.env.spec.id, self._state_dim, self._action_dim, self.action_range, self.horizon, self.device, True, 1.0, 512, 2, 512, 0, "GRU", 512, 2, 1e-3).to(self.device) # type: ignore
         self.termination_model = networks.TerminationModel(self._state_dim + self._action_dim, 1).to(self.device)
         self.reward_model = networks.RewardModel(self._state_dim + self._action_dim, 1).to(self.device)
+        self.rollout_lifetime_steps = 100
+        self.rollouts_per_step = 256
+        self.rollout_length = 3
+        self.model_buffer = fbbuffer.ReplayBuffer(self._state_dim, self._action_dim, self.rollouts_per_step * self.rollout_lifetime_steps, self.device, normalize_obs=normalize_obs)
 
         self.opt_rewards = torch.optim.Adam(self.reward_model.parameters(), lr=1e-3)
         self.opt_terminations = torch.optim.Adam(self.termination_model.parameters(), lr=1e-3)
@@ -64,6 +70,7 @@ class StandardSACAgent(RLAgent):
         self.tau = tau
         self.target_update_interval = target_update_interval
         self.replay_batch_size = replay_batch_size
+        self.real_ratio = 0.2
         self.warmup_steps = warmup_steps
         self.gradient_steps = gradient_steps
         self.multi_step_batch_size = 1024
@@ -77,7 +84,7 @@ class StandardSACAgent(RLAgent):
         # Simple to train, just MSE between predicted and real
         states_actions = torch.cat([states, actions], dim=-1)
         predicted_rewards = self.reward_model(states_actions)
-        rewards = rewards.unsqueeze(1)
+        # rewards = rewards.unsqueeze(1)
 
         assert predicted_rewards.shape == rewards.shape
 
@@ -89,7 +96,8 @@ class StandardSACAgent(RLAgent):
         self.opt_rewards.step()
 
     def update_terminations(self, states, actions, not_dones):
-        dones = (1. - not_dones).unsqueeze(1)
+        dones = (1. - not_dones)
+
         states_actions = torch.cat([states, actions], dim=-1)
         predicted = self.termination_model(states_actions)
 
@@ -114,7 +122,8 @@ class StandardSACAgent(RLAgent):
         state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=False)
+            # action = self.actor.compute_actions(state, stochastic=False)
+            action, _, _ = self.actor(state, compute_pi=False, compute_log_pi=False)
 
         return action.detach().cpu().numpy()[0]
 
@@ -122,9 +131,76 @@ class StandardSACAgent(RLAgent):
         state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            action = self.actor.compute_actions(state, stochastic=True)
+            # action = self.actor.compute_actions(state, stochastic=True)
+            _, action, _ = self.actor(state, compute_log_pi=False)
 
         return action.detach().cpu().numpy()[0]
+
+    def rollout_model(self):
+        if self.real_ratio == 0:
+            return
+
+        states, _, nr, ns, _, nd = self.replay_buffer.sample(self.rollouts_per_step * self.rollout_lifetime_steps)
+        nd = 1 - nd # We want to know if it is done rather than not done
+
+        for i in range(self.rollout_length):
+            actions = torch.tensor(self.sample_regular_action(states.detach().cpu().numpy()), device=self.device)
+            next_states = self.dynamics.unroll(states, actions.unsqueeze(0), detach_xt=True).squeeze(0)
+
+            joined = torch.cat([states, actions], dim=-1)
+            reward = self.reward_model(joined)
+            done = self.termination_model(joined).sigmoid()
+
+            done[torch.where(done >= 0.5)] = 1
+            done[torch.where(done < 0.5)] = 0
+
+            self.model_buffer.bulk_add(
+                states.detach().cpu().numpy(),
+                actions.detach().cpu().numpy(),
+                reward.detach().cpu().numpy(),
+                next_states.detach().cpu().numpy(),
+                done.detach().cpu().numpy(),
+                done.detach().cpu().numpy()
+            )
+
+            # Write losses to TB
+            if i == 0:
+                self._writer.add_scalar("rollout/dones", F.mse_loss(done, nd), self.steps)
+                self._writer.add_scalar("rollout/rewards", F.mse_loss(reward, nr), self.steps)
+                self._writer.add_scalar("rollout/next_states", F.mse_loss(next_states, ns), self.steps)
+
+            # print(reward, nr)
+            # print(done, nd)
+
+            states = next_states
+
+
+        # predicted_actions, _, predicted_states = self.dynamics.unroll_policy(states, self.actor, sample=True, last_u=False, detach_xt=True)
+
+        # for t in range(predicted_states.shape[0] - 1):
+        #     ts_actions = predicted_actions[t]
+        #     ts_states = predicted_states[t]
+        #     ts_joined = torch.cat([ts_states, ts_actions], dim=-1)
+        #     ts_rewards = self.reward_model(ts_joined)
+        #     ts_dones = self.termination_model(ts_joined).sigmoid()
+        #     ts_dones[torch.where(ts_dones > 0.5)] = 1
+        #     ts_dones[torch.where(ts_dones <= 0.5)] = 0
+
+        #     for i in range(ts_states.shape[0]):
+        #         self.model_buffer.add(
+        #             ts_states[i].detach().cpu().numpy(),
+        #             ts_actions[i].detach().cpu().numpy(),
+        #             ts_rewards[i].detach().cpu().numpy(),
+        #             predicted_states[t+1][i].detach().cpu().numpy(),
+        #             ts_dones[i].detach().cpu().numpy(),
+        #             ts_dones[i].detach().cpu().numpy()
+        #         )
+
+        # want states, predicted_actions[0], predicted_states[0]
+        # predicted_states[0], predicted_actions[1], predicted_states[1]
+        # need to predict reward and terminals too
+
+        # print(predicted_states.shape, predicted_actions.shape)
 
     def train_policy(self) -> None:
         # Need to fill the buffer before we can do anything
@@ -133,6 +209,27 @@ class StandardSACAgent(RLAgent):
 
         # Firstly update the Q functions (the critics)
         states, actions, rewards, next_states, not_dones, not_dones_no_max = self.replay_buffer.sample(self.replay_batch_size)
+
+        # Update reward and termination models
+        self.update_terminations(states, actions, not_dones_no_max)
+        self.update_rewards(states, actions, rewards)
+
+        # Mix in some fake samples
+        if len(self.model_buffer) != 0:
+            real_count = int(self.replay_batch_size * self.real_ratio)
+            fake_count = self.replay_batch_size - real_count
+
+            #rstates, ractions, rrewards, rnext_states, rnot_dones, rnot_dones_no_max = self.replay_buffer.sample(real_count)
+            fstates, factions, frewards, fnext_states, fnot_dones, fnot_dones_no_max = self.model_buffer.sample(fake_count)
+
+            shuffle = torch.randperm(real_count + fake_count)
+
+            states = torch.cat([states[:real_count], fstates], dim=0)[shuffle]
+            actions = torch.cat([actions[:real_count], factions], dim=0)[shuffle]
+            rewards = torch.cat([rewards[:real_count], frewards], dim=0)[shuffle]
+            next_states = torch.cat([next_states[:real_count], fnext_states], dim=0)[shuffle]
+            not_dones = torch.cat([not_dones[:real_count], fnot_dones], dim=0)[shuffle]
+            not_dones_no_max = torch.cat([not_dones_no_max[:real_count], fnot_dones_no_max], dim=0)[shuffle]
 
         # Q Target
         # For this we need:
@@ -143,13 +240,14 @@ class StandardSACAgent(RLAgent):
 
         # Parameters of the target critics are frozen so don't update them!
         with torch.no_grad():
-            target_actions = self.actor.compute_actions(next_states)
+            # target_actions = self.actor(next_states, compute_pi=False)
+            mu, target_actions, log_pi = self.actor(next_states, compute_pi=True, compute_log_pi=True)
             target_input = torch.cat([next_states, target_actions], dim=-1)
 
             # Calculate both critic Qs and then take the min
             target_Q1 = self.target_critic_1(target_input)
             target_Q2 = self.target_critic_2(target_input)
-            min_Q_target = torch.min(target_Q1, target_Q2)
+            min_Q_target = torch.min(target_Q1, target_Q2) # - self.temp.alpha.detach() * log_pi
 
             # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
             # target_Q = rewards.unsqueeze(1) + not_dones_no_max.unsqueeze(1) * self.gamma * min_Q_target 
@@ -187,7 +285,7 @@ class StandardSACAgent(RLAgent):
         # * current alpha
         # Maps to Eq 7
 
-        actor_actions, actor_probs = self.actor.compute(states)
+        _, actor_actions, actor_probs = self.actor(states, compute_pi=True, compute_log_pi=True)
         real_input = torch.cat([states, actor_actions], dim=-1)
 
         # See what the critics think to the actor's prediction of the next action
@@ -240,6 +338,9 @@ class StandardSACAgent(RLAgent):
             states, actions, rewards = self.replay_buffer.sample_multistep(self.multi_step_batch_size, self.horizon)
             dynamics_loss = self.dynamics.update_step(states, actions, rewards, self._writer, self.steps)
             self._writer.add_scalar("loss/dynamics", dynamics_loss, self._steps)
+
+        if self.steps % self.rollout_lifetime_steps == 0:
+            self.rollout_model()
 
     def update_target_parameters(self):
         # Update frozen targets, taken from https://github.com/sfujim/TD3/blob/385b33ac7de4767bab17eb02ade4a268d3e4e24f/TD3.py
@@ -302,5 +403,5 @@ class StandardSACAgent(RLAgent):
                 self._writer.add_scalar("stats/eval_reward", avg_reward, self.episodes)
                 self.log(f"[EVAL] Average reward over {eval_episodes} was {avg_reward}")
 
-s = StandardSACAgent("Pendulum-v1", "cuda", None)
-s.run()
+# s = EnhancedSACAgent("Pendulum-v1", "cuda", None)
+# s.run()
