@@ -185,6 +185,10 @@ class ReplayBuffer(object):
             self.next_obses = next_obses
             self.not_dones = np.logical_not(dones)
             self.not_dones_no_max = np.logical_not(done_no_maxes)
+
+            # self.idx = self.idx
+            self.global_idx += obses.shape[0]
+            self.full = True
             return
 
         start_index = self.idx
@@ -192,7 +196,7 @@ class ReplayBuffer(object):
         secondary_start_index = None
         secondary_end_index = None
 
-        print(self.idx, start_index, end_index)
+        # print(self.idx, start_index, end_index)
 
         if end_index < start_index:
             secondary_start_index = 0
@@ -240,7 +244,7 @@ class ReplayBuffer(object):
         self.idx = (self.idx + obses.shape[0]) % self.capacity
         self.global_idx += obses.shape[0]
         self.full = self.full or secondary_start_index is not None
-        print(self.idx)
+        # print(self.idx)
 
     def add(self, obs, action, reward, next_obs, done, done_no_max):
         # For saving

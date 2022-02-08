@@ -9,6 +9,7 @@ import buffers
 import torch.nn.functional as F
 import svgsacmodels as ssm
 import svg
+import gym
 
 class EnhancedSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
@@ -19,6 +20,7 @@ class EnhancedSACAgent(RLAgent):
         SAC Implementation
         """
         super().__init__("EnhancedSAC", env_name, device, video_every)
+        # self.env = gym.wrappers.NormalizeReward(self.env)
 
         # self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
         self.replay_buffer = fbbuffer.ReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device, normalize_obs=normalize_obs)
@@ -60,7 +62,7 @@ class EnhancedSACAgent(RLAgent):
         self.rollout_lifetime_steps = 100
         self.rollouts_per_step = 256
         self.rollout_length = 3
-        self.model_buffer = fbbuffer.ReplayBuffer(self._state_dim, self._action_dim, self.rollouts_per_step * self.rollout_lifetime_steps, self.device, normalize_obs=normalize_obs)
+        self.model_buffer = fbbuffer.ReplayBuffer(self._state_dim, self._action_dim, self.rollouts_per_step * self.rollout_lifetime_steps * self.rollout_length, self.device, normalize_obs=normalize_obs)
 
         self.opt_rewards = torch.optim.Adam(self.reward_model.parameters(), lr=1e-3)
         self.opt_terminations = torch.optim.Adam(self.termination_model.parameters(), lr=1e-3)
@@ -70,11 +72,14 @@ class EnhancedSACAgent(RLAgent):
         self.tau = tau
         self.target_update_interval = target_update_interval
         self.replay_batch_size = replay_batch_size
-        self.real_ratio = 0.2
+        self.real_ratio = 0.5
         self.warmup_steps = warmup_steps
-        self.gradient_steps = gradient_steps
+        self.gradient_steps = 2
         self.multi_step_batch_size = 1024
         self.M_seqs = 4
+        self.M_steps = 1
+
+        self._train_steps = 0
     
     @property
     def alpha(self):
@@ -137,7 +142,7 @@ class EnhancedSACAgent(RLAgent):
         return action.detach().cpu().numpy()[0]
 
     def rollout_model(self):
-        if self.real_ratio == 0:
+        if self.real_ratio == 1:
             return
 
         states, _, nr, ns, _, nd = self.replay_buffer.sample(self.rollouts_per_step * self.rollout_lifetime_steps)
@@ -207,126 +212,137 @@ class EnhancedSACAgent(RLAgent):
         if len(self.replay_buffer) < self.replay_batch_size:
             return
 
-        # Firstly update the Q functions (the critics)
-        states, actions, rewards, next_states, not_dones, not_dones_no_max = self.replay_buffer.sample(self.replay_batch_size)
+        self._train_steps += 1
 
-        # Update reward and termination models
-        self.update_terminations(states, actions, not_dones_no_max)
-        self.update_rewards(states, actions, rewards)
+        for s in range(self.M_steps):
+            # Firstly update the Q functions (the critics)
+            states, actions, rewards, next_states, not_dones, not_dones_no_max = self.replay_buffer.sample(self.replay_batch_size)
 
-        # Mix in some fake samples
-        if len(self.model_buffer) != 0:
-            real_count = int(self.replay_batch_size * self.real_ratio)
-            fake_count = self.replay_batch_size - real_count
+            # Update reward and termination models
+            self.update_terminations(states, actions, not_dones_no_max)
+            self.update_rewards(states, actions, rewards)
 
-            #rstates, ractions, rrewards, rnext_states, rnot_dones, rnot_dones_no_max = self.replay_buffer.sample(real_count)
-            fstates, factions, frewards, fnext_states, fnot_dones, fnot_dones_no_max = self.model_buffer.sample(fake_count)
+            # if self.steps > self.warmup_steps:
+            #    print("Taking step", len(self.model_buffer))
 
-            shuffle = torch.randperm(real_count + fake_count)
+            # Mix in some fake samples
+            if len(self.model_buffer) != 0:
+                real_count = int(self.replay_batch_size * self.real_ratio)
+                fake_count = self.replay_batch_size - real_count
 
-            states = torch.cat([states[:real_count], fstates], dim=0)[shuffle]
-            actions = torch.cat([actions[:real_count], factions], dim=0)[shuffle]
-            rewards = torch.cat([rewards[:real_count], frewards], dim=0)[shuffle]
-            next_states = torch.cat([next_states[:real_count], fnext_states], dim=0)[shuffle]
-            not_dones = torch.cat([not_dones[:real_count], fnot_dones], dim=0)[shuffle]
-            not_dones_no_max = torch.cat([not_dones_no_max[:real_count], fnot_dones_no_max], dim=0)[shuffle]
+                if self.steps % 1000 == 0 and s == 0:
+                    self.log(f"Sampling {fake_count} fakes")
 
-        # Q Target
-        # For this we need:
-        # * (s_t, a_t, r_t) ~ buffer
-        # * min{1,2}(Q(s_t, a_t))
-        # * a'_t ~ policy(s_[t+1])
-        # This maps to Eq 3 and Eq 5 from Haarnoja et al. 2018
+                #print(f"Sampling {fake_count} fakes")
 
-        # Parameters of the target critics are frozen so don't update them!
-        with torch.no_grad():
-            # target_actions = self.actor(next_states, compute_pi=False)
-            mu, target_actions, log_pi = self.actor(next_states, compute_pi=True, compute_log_pi=True)
-            target_input = torch.cat([next_states, target_actions], dim=-1)
+                #rstates, ractions, rrewards, rnext_states, rnot_dones, rnot_dones_no_max = self.replay_buffer.sample(real_count)
+                fstates, factions, frewards, fnext_states, fnot_dones, fnot_dones_no_max = self.model_buffer.sample(fake_count)
 
-            # Calculate both critic Qs and then take the min
-            target_Q1 = self.target_critic_1(target_input)
-            target_Q2 = self.target_critic_2(target_input)
-            min_Q_target = torch.min(target_Q1, target_Q2) # - self.temp.alpha.detach() * log_pi
+                shuffle = torch.randperm(real_count + fake_count)
 
-            # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
-            # target_Q = rewards.unsqueeze(1) + not_dones_no_max.unsqueeze(1) * self.gamma * min_Q_target 
-            target_Q = rewards + not_dones_no_max * self.gamma * min_Q_target 
+                states = torch.cat([states[:real_count], fstates], dim=0)[shuffle]
+                actions = torch.cat([actions[:real_count], factions], dim=0)[shuffle]
+                rewards = torch.cat([rewards[:real_count], frewards], dim=0)[shuffle]
+                next_states = torch.cat([next_states[:real_count], fnext_states], dim=0)[shuffle]
+                not_dones = torch.cat([not_dones[:real_count], fnot_dones], dim=0)[shuffle]
+                not_dones_no_max = torch.cat([not_dones_no_max[:real_count], fnot_dones_no_max], dim=0)[shuffle]
+
+            # Q Target
+            # For this we need:
+            # * (s_t, a_t, r_t) ~ buffer
+            # * min{1,2}(Q(s_t, a_t))
+            # * a'_t ~ policy(s_[t+1])
+            # This maps to Eq 3 and Eq 5 from Haarnoja et al. 2018
+
+            # Parameters of the target critics are frozen so don't update them!
+            with torch.no_grad():
+                # target_actions = self.actor(next_states, compute_pi=False)
+                mu, target_actions, log_pi = self.actor(next_states, compute_pi=True, compute_log_pi=True)
+                target_input = torch.cat([next_states, target_actions], dim=-1)
+
+                # Calculate both critic Qs and then take the min
+                target_Q1 = self.target_critic_1(target_input)
+                target_Q2 = self.target_critic_2(target_input)
+                min_Q_target = torch.min(target_Q1, target_Q2) # - self.alpha.detach() * log_pi
+
+                # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
+                # target_Q = rewards.unsqueeze(1) + not_dones_no_max.unsqueeze(1) * self.gamma * min_Q_target 
+                target_Q = rewards + not_dones_no_max * self.gamma * min_Q_target 
+                
+                # Log for TB
+                self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._train_steps)
+
+            # Now calculate the MSE for the critics and update parameters
+            critic_input = torch.cat([states, actions], dim=-1)
+
+            actual_Q1 = self.critic_1(critic_input)
+            self._writer.add_scalar("stats/critic_1", actual_Q1.detach().cpu().mean().item(), self._train_steps)
+            actual_Q2 = self.critic_2(critic_input)
+            self._writer.add_scalar("stats/critic_2", actual_Q2.detach().cpu().mean().item(), self._train_steps)
+
+            # Eq 5
+            critic_1_loss = 0.5 * F.mse_loss(actual_Q1, target_Q)
+            critic_2_loss = 0.5 * F.mse_loss(actual_Q2, target_Q)
+
+            self._writer.add_scalar("stats/critic_loss_1", critic_1_loss.detach().cpu().item(), self._train_steps)
+            self._writer.add_scalar("stats/critic_loss_2", critic_1_loss.detach().cpu().item(), self._train_steps)
+
+            self.opt_critic_1.zero_grad()
+            critic_1_loss.backward()
+            self.opt_critic_1.step()
             
-            # Log for TB
-            self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._steps)
+            self.opt_critic_2.zero_grad()
+            critic_2_loss.backward()
+            self.opt_critic_2.step()
 
-        # Now calculate the MSE for the critics and update parameters
-        critic_input = torch.cat([states, actions], dim=-1)
+            # Q functions updated, now update the policy, need:
+            # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
+            # * log(a'_t | s_t) from policy
+            # * current alpha
+            # Maps to Eq 7
 
-        actual_Q1 = self.critic_1(critic_input)
-        self._writer.add_scalar("stats/critic_1", actual_Q1.detach().cpu().mean().item(), self._steps)
-        actual_Q2 = self.critic_2(critic_input)
-        self._writer.add_scalar("stats/critic_2", actual_Q2.detach().cpu().mean().item(), self._steps)
+            _, actor_actions, actor_probs = self.actor(states, compute_pi=True, compute_log_pi=True)
+            real_input = torch.cat([states, actor_actions], dim=-1)
 
-        # Eq 5
-        critic_1_loss = 0.5 * F.mse_loss(actual_Q1, target_Q)
-        critic_2_loss = 0.5 * F.mse_loss(actual_Q2, target_Q)
+            # See what the critics think to the actor's prediction of the next action
+            real_Q1 = self.critic_1(real_input)
+            real_Q2 = self.critic_2(real_input)
+            min_Q = torch.min(real_Q1, real_Q2)
 
-        self._writer.add_scalar("stats/critic_loss_1", critic_1_loss.detach().cpu().item(), self._steps)
-        self._writer.add_scalar("stats/critic_loss_2", critic_1_loss.detach().cpu().item(), self._steps)
+            self._writer.add_scalar('loss/mean_Q1', real_Q1.detach().mean().item(), self._train_steps)
+            self._writer.add_scalar('loss/mean_Q2', real_Q2.detach().mean().item(), self._train_steps)
 
-        self.opt_critic_1.zero_grad()
-        critic_1_loss.backward()
-        self.opt_critic_1.step()
-        
-        self.opt_critic_2.zero_grad()
-        critic_2_loss.backward()
-        self.opt_critic_2.step()
+            # See Eq 7 
+            actor_loss = (self.alpha * actor_probs - min_Q).mean()
+            self._writer.add_scalar('loss/actor', actor_loss.detach().item(), self._train_steps)
 
-        # Q functions updated, now update the policy, need:
-        # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
-        # * log(a'_t | s_t) from policy
-        # * current alpha
-        # Maps to Eq 7
+            self.opt_actor.zero_grad()
+            actor_loss.backward()
+            self.opt_actor.step()
 
-        _, actor_actions, actor_probs = self.actor(states, compute_pi=True, compute_log_pi=True)
-        real_input = torch.cat([states, actor_actions], dim=-1)
+            # Actor updated, now update the temperature (alpha), need:
+            # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
+            # * log(a'_t | s_t) from policy
+            # * target entropy H
+            # * current alpha
 
-        # See what the critics think to the actor's prediction of the next action
-        real_Q1 = self.critic_1(real_input)
-        real_Q2 = self.critic_2(real_input)
-        min_Q = torch.min(real_Q1, real_Q2)
+            # No need to backprop on the target or log probabilities since
+            # we want to isolate the alpha update here
+            alpha_loss = -self.alpha * (actor_probs + self.target_entropy).detach()
+            alpha_loss = alpha_loss.mean()
+            self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._train_steps)
 
-        self._writer.add_scalar('loss/mean_Q1', real_Q1.detach().mean().item(), self._steps)
-        self._writer.add_scalar('loss/mean_Q2', real_Q2.detach().mean().item(), self._steps)
+            self.opt_alpha.zero_grad()
+            alpha_loss.backward()
+            self.opt_alpha.step()
 
-        # See Eq 7 
-        actor_loss = (self.alpha * actor_probs - min_Q).mean()
-        self._writer.add_scalar('loss/actor', actor_loss.detach().item(), self._steps)
+            # Make sure to update alpha now we've updated log_alpha
+            # self.alpha = self.log_alpha.exp() # no need as handled by property
 
-        self.opt_actor.zero_grad()
-        actor_loss.backward()
-        self.opt_actor.step()
+            self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._train_steps)
 
-        # Actor updated, now update the temperature (alpha), need:
-        # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
-        # * log(a'_t | s_t) from policy
-        # * target entropy H
-        # * current alpha
-
-        # No need to backprop on the target or log probabilities since
-        # we want to isolate the alpha update here
-        alpha_loss = -self.log_alpha.exp() * (actor_probs + self.target_entropy).detach()
-        alpha_loss = alpha_loss.mean()
-        self._writer.add_scalar("loss/alpha", alpha_loss.detach().item(), self._steps)
-
-        self.opt_alpha.zero_grad()
-        alpha_loss.backward()
-        self.opt_alpha.step()
-
-        # Make sure to update alpha now we've updated log_alpha
-        # self.alpha = self.log_alpha.exp() # no need as handled by property
-
-        self._writer.add_scalar('stats/alpha', self.alpha.detach().item(), self._steps)
-
-        # Update the frozen critics
-        self.update_target_parameters()
+            # Update the frozen critics
+            self.update_target_parameters()
 
         if self.steps < self.warmup_steps:
             return
@@ -337,9 +353,10 @@ class EnhancedSACAgent(RLAgent):
             # Start by sampling the multi-step trajectories
             states, actions, rewards = self.replay_buffer.sample_multistep(self.multi_step_batch_size, self.horizon)
             dynamics_loss = self.dynamics.update_step(states, actions, rewards, self._writer, self.steps)
-            self._writer.add_scalar("loss/dynamics", dynamics_loss, self._steps)
+            self._writer.add_scalar("loss/dynamics", dynamics_loss, self._train_steps)
 
-        if self.steps % self.rollout_lifetime_steps == 0:
+        # Give the dynamics model a chance to warmup prior to using samples from it
+        if self._train_steps % self.rollout_lifetime_steps == 0 and self.steps >= 2 * self.warmup_steps:
             self.rollout_model()
 
     def update_target_parameters(self):
@@ -364,8 +381,10 @@ class EnhancedSACAgent(RLAgent):
                     action = self.env.action_space.sample()
                 else:
                     action = self.sample_regular_action(state)
+
+                policy_steps = self.gradient_steps if self.steps > 2 * self.warmup_steps else 1
             
-                for _ in range(self.gradient_steps):
+                for _ in range(policy_steps):
                     self.train_policy()
                 
                 next_state, reward, done, _ = self.env.step(action)
