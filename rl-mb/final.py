@@ -7,17 +7,23 @@ import copy
 import numpy as np
 import torch.nn.functional as F
 
+# Weighted Importance Sampling Mean Squared Error 
+# Cite https://proceedings.neurips.cc/paper/2014/file/be53ee61104935234b174e62a07e53cf-Paper.pdf
+def wis_mse(input, target, weights):
+    return (weights * (target - input).square()).mean()
+
 class FinalSACAgent(RLAgent):
     def __init__(self, env_name: str, device: Union[str, torch.device], video_every: Optional[int],
                         buffer_size: int = int(1e6), lr: float = 0.0003, tau: float = 0.005,
                         replay_batch_size: int = 256, gamma: float = 0.99, gradient_steps: int = 1,
-                        warmup_steps: int = 10000, target_update_interval: int = 1):
+                        warmup_steps: int = 1000, target_update_interval: int = 1):
         """
         SAC Implementation
         """
         super().__init__("SACRewrite", env_name, device, video_every)
 
-        self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
+        self.replay_buffer = buffers.PriorityReplayBuffer(self._state_dim, self._action_dim, 20, self.device)
+        # self.replay_buffer = buffers.StandardReplayBuffer(self._state_dim, self._action_dim, buffer_size, self.device)
 
         # Critics predicts the reward of taking action A from state S
         self.critic_1 = networks.Critic(input_size=self._state_dim + self._action_dim, output_size=1).to(self.device)
@@ -79,7 +85,7 @@ class FinalSACAgent(RLAgent):
             return
 
         # Firstly update the Q functions (the critics)
-        states, actions, rewards, next_states, not_terminals = self.replay_buffer.sample_buffer(self.replay_batch_size)
+        (states, actions, rewards, next_states, not_terminals), buffer_indexes, buffer_weights  = self.replay_buffer.sample_buffer(self.replay_batch_size)
 
         # Q Target
         # For this we need:
@@ -126,6 +132,10 @@ class FinalSACAgent(RLAgent):
         self.opt_critic_2.zero_grad()
         critic_2_loss.backward()
         self.opt_critic_2.step()
+
+        
+        td_errors = torch.abs(target_Q - actual_Q1).detach().cpu().numpy()
+        self.replay_buffer.update_priorities(buffer_indexes, td_errors)
 
         # Q functions updated, now update the policy, need:
         # * a'_t ~ policy(s_t) (NOT s_[t+1] like in Q updates)
@@ -204,7 +214,7 @@ class FinalSACAgent(RLAgent):
                 self._episode_steps += 1
                 episode_reward += reward
 
-                self.replay_buffer.store_replay(state, action, reward, next_state, done)
+                self.replay_buffer.store_replay(state, action, reward, next_state, done, None)
                 state = next_state 
             
             self._writer.add_scalar("stats/reward", episode_reward, self.episodes)

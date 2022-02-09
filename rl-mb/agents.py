@@ -359,7 +359,7 @@ class StandardSACAgent(RLAgent):
             return
 
         # Firstly update the Q functions (the critics)
-        buffer_sample = self.replay_buffer.sample_buffer(self.replay_batch_size)
+        states, actions, rewards, next_states, not_terminals = self.replay_buffer.sample_buffer(self.replay_batch_size)
 
         # Q Target
         # For this we need:
@@ -370,8 +370,8 @@ class StandardSACAgent(RLAgent):
 
         # Parameters of the target critics are frozen so don't update them!
         with torch.no_grad():
-            target_actions, log_probs = self.actor.compute(buffer_sample.next_states)
-            target_input = torch.cat([buffer_sample.next_states, target_actions], dim=-1)
+            target_actions, log_probs = self.actor.compute(next_states)
+            target_input = torch.cat([next_states, target_actions], dim=-1)
 
             # Calculate both critic Qs and then take the min
             target_Q1 = self.target_critic_1(target_input)
@@ -379,13 +379,13 @@ class StandardSACAgent(RLAgent):
             min_Q_target = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_probs
 
             # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
-            target_Q = buffer_sample.rewards.unsqueeze(1) + buffer_sample.terminals.unsqueeze(1) * self.gamma * min_Q_target 
+            target_Q = rewards.unsqueeze(1) + not_terminals.unsqueeze(1) * self.gamma * min_Q_target 
             
             # Log for TB
             self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._steps)
 
         # Now calculate the MSE for the critics and update parameters
-        critic_input = torch.cat([buffer_sample.states, buffer_sample.actions], dim=-1)
+        critic_input = torch.cat([states, actions], dim=-1)
 
         actual_Q1 = self.critic_1(critic_input)
         self._writer.add_scalar("stats/critic_1", actual_Q1.detach().cpu().mean().item(), self._steps)
@@ -413,8 +413,8 @@ class StandardSACAgent(RLAgent):
         # * current alpha
         # Maps to Eq 7
 
-        actor_actions, actor_probs = self.actor.compute(buffer_sample.states)
-        real_input = torch.cat([buffer_sample.states, actor_actions], dim=-1)
+        actor_actions, actor_probs = self.actor.compute(states)
+        real_input = torch.cat([states, actor_actions], dim=-1)
 
         # See what the critics think to the actor's prediction of the next action
         real_Q1 = self.critic_1(real_input)

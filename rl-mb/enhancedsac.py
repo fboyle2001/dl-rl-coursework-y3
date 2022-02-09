@@ -32,8 +32,8 @@ class EnhancedSACAgent(RLAgent):
 
         # Actor predicts the action to take based on the current state
         # Though in SAC it actually predicts the distribution of actions
-        # self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device)
-        self.actor = svg.Actor(self._state_dim, self._action_dim, 512, 4, log_std_bounds=[-5, 2]).to(self.device)
+        self.actor = networks.GaussianActor(self._state_dim, self._action_dim, self.device).to(self.device)
+        # self.actor = svg.Actor(self._state_dim, self._action_dim, 512, 4, log_std_bounds=[-5, 2]).to(self.device)
 
         # Establish the target networks
         self.target_critic_1 = copy.deepcopy(self.critic_1).to(self.device)
@@ -130,8 +130,8 @@ class EnhancedSACAgent(RLAgent):
         state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            # action = self.actor.compute_actions(state, stochastic=False)
-            action, _, _ = self.actor(state, compute_pi=False, compute_log_pi=False)
+            action = self.actor.compute_actions(state, stochastic=False)
+            #action = self.actor(state, compute_pi=False, compute_log_pi=False)
 
         return action.detach().cpu().numpy()[0]
 
@@ -139,8 +139,8 @@ class EnhancedSACAgent(RLAgent):
         state = torch.FloatTensor(states).to(self.device).unsqueeze(0)
 
         with torch.no_grad():
-            # action = self.actor.compute_actions(state, stochastic=True)
-            _, action, _ = self.actor(state, compute_log_pi=False)
+            action = self.actor.compute_actions(state, stochastic=True)
+            # _, action, _ = self.actor(state, compute_log_pi=False)
 
         return action.detach().cpu().numpy()[0]
 
@@ -228,7 +228,8 @@ class EnhancedSACAgent(RLAgent):
                 # Parameters of the target critics are frozen so don't update them!
                 with torch.no_grad():
                     # target_actions = self.actor(next_states, compute_pi=False)
-                    mu, target_actions, log_pi = self.actor(next_states, compute_pi=True, compute_log_pi=True)
+                    # mu, target_actions, log_pi = self.actor(next_states, compute_pi=True, compute_log_pi=True)
+                    target_actions, log_pi = self.actor.compute(next_states)
                     target_input = torch.cat([next_states, target_actions], dim=-1)
 
                     # Calculate both critic Qs and then take the min
@@ -272,7 +273,8 @@ class EnhancedSACAgent(RLAgent):
             # * current alpha
             # Maps to Eq 7
 
-            _, actor_actions, actor_probs = self.actor(states, compute_pi=True, compute_log_pi=True)
+            actor_actions, actor_probs = self.actor.compute(states, stochastic=True)
+            # _, actor_actions, actor_probs = self.actor(states, compute_pi=True, compute_log_pi=True)
             real_input = torch.cat([states, actor_actions], dim=-1)
 
             # See what the critics think to the actor's prediction of the next action

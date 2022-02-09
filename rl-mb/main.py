@@ -6,6 +6,7 @@ import svg
 import svgrip
 import mbporip
 import enhancedsac
+import final
 
 def main():
     parser = argparse.ArgumentParser()
@@ -16,10 +17,11 @@ def main():
     parser.add_argument("--virtual-display", action="store_true", default=False)
     args = parser.parse_args()
 
-    agents.AGENT_MAP["TrueSVG"] = svg.SACSVGAgent
-    agents.AGENT_MAP["RippedSVG"] = svgrip.SVGDirectRipAgent
-    agents.AGENT_MAP["RippedMBPO"] = mbporip.RippedMBPOAgent
-    agents.AGENT_MAP["EnhancedSAC"] = enhancedsac.EnhancedSACAgent
+    # agents.AGENT_MAP["TrueSVG"] = svg.SACSVGAgent
+    # agents.AGENT_MAP["RippedSVG"] = svgrip.SVGDirectRipAgent
+    # agents.AGENT_MAP["RippedMBPO"] = mbporip.RippedMBPOAgent
+    # agents.AGENT_MAP["EnhancedSAC"] = enhancedsac.EnhancedSACAgent
+    agents.AGENT_MAP["FinalSAC"] = final.FinalSACAgent
 
     assert args.agent and args.agent in agents.AGENT_MAP.keys(), f"{args.agent} is an invalid agent type"
 
