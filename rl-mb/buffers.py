@@ -10,7 +10,6 @@ import torch
 from collections import namedtuple
 
 BufferSample = namedtuple("BufferSample", ["states", "actions", "rewards", "next_states", "terminals"])
-Trajectory = namedtuple("Trajectory", ["states", "actions", "rewards", "next_states", "terminals"])
 
 class AbstractReplayBuffer(abc.ABC):
     def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
@@ -24,7 +23,7 @@ class AbstractReplayBuffer(abc.ABC):
         self.actions      = np.zeros((max_size, action_dim))
         self.rewards      = np.zeros(max_size)
         self.next_states  = np.zeros((max_size, state_dim))
-        self.terminals    = np.zeros(max_size, dtype="bool")
+        self.not_terminals    = np.zeros(max_size, dtype="bool")
         # Will store the end index of the trajectory and the length of the trajectory
         self.trajectories = np.zeros((max_size, 1))
 
@@ -43,7 +42,7 @@ class AbstractReplayBuffer(abc.ABC):
         self.actions[self.pointer]     = action
         self.rewards[self.pointer]     = reward
         self.next_states[self.pointer] = next_state
-        self.terminals[self.pointer]   = not is_terminal
+        self.not_terminals[self.pointer]   = not is_terminal
         self.trajectories[self.pointer] = self.traj_length if is_terminal else 0
         
         if is_terminal:
@@ -52,23 +51,33 @@ class AbstractReplayBuffer(abc.ABC):
         self.count = min(self.count + 1, self.max_size)
         self.pointer = (self.pointer + 1) % self.max_size
 
-    def store_replays(self, states: np.ndarray, actions: np.ndarray, rewards: np.ndarray, next_states: np.ndarray, is_terminals: np.ndarray) -> None:
+    def store_replays(self, states: np.ndarray, actions: np.ndarray, rewards: np.ndarray, next_states: np.ndarray, terminals: np.ndarray) -> None:
         for replay_index in range(states.shape[0]):
-            self.store_replay(states[replay_index], actions[replay_index], rewards[replay_index], next_states[replay_index], is_terminals[replay_index])
+            self.store_replay(states[replay_index], actions[replay_index], rewards[replay_index], next_states[replay_index], terminals[replay_index])
 
-    def get_all_replays(self) -> BufferSample:
-        buffer = BufferSample(
+    def overwrite(self, states: np.ndarray, actions: np.ndarray, rewards: np.ndarray, next_states: np.ndarray, is_terminals: np.ndarray) -> None:
+        assert states.shape[0] == self.max_size
+        
+        self.states = states
+        self.actions = actions
+        self.rewards = rewards
+        self.next_states = next_states
+        self.not_terminals = np.logical_not(is_terminals)
+
+        self.pointer = 0
+        self.count = self.max_size
+
+    def get_all_replays(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (
             torch.FloatTensor(self.states[:self.count]).to(self.device),
             torch.FloatTensor(self.actions[:self.count]).to(self.device),
             torch.FloatTensor(self.rewards[:self.count]).to(self.device),
             torch.FloatTensor(self.next_states[:self.count]).to(self.device),
-            torch.FloatTensor(self.terminals[:self.count]).to(self.device)
+            torch.FloatTensor(self.not_terminals[:self.count]).to(self.device)
         )
 
-        return buffer
-
     @abc.abstractmethod
-    def sample_buffer(self, batch_size: int) -> BufferSample:
+    def sample_buffer(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
 
     @abc.abstractmethod
@@ -216,15 +225,15 @@ class StandardReplayBuffer(AbstractReplayBuffer):
     def __init__(self, state_dim: int, action_dim: int, max_size: int, device: Union[str, torch.device]):
         super(StandardReplayBuffer, self).__init__(state_dim, action_dim, max_size, device)
 
-    def sample_buffer(self, batch_size: int) -> BufferSample:
+    def sample_buffer(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         random_sample = np.random.choice(self.count, size=batch_size)
 
-        return BufferSample(
+        return (
             torch.FloatTensor(self.states[random_sample]).to(self.device),
             torch.FloatTensor(self.actions[random_sample]).to(self.device),
             torch.FloatTensor(self.rewards[random_sample]).to(self.device),
             torch.FloatTensor(self.next_states[random_sample]).to(self.device),
-            torch.FloatTensor(self.terminals[random_sample]).to(self.device)
+            torch.FloatTensor(self.not_terminals[random_sample]).to(self.device)
         )
 
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
@@ -240,7 +249,7 @@ class StandardReplayBuffer(AbstractReplayBuffer):
                     self.actions[trajectory_start : trajectory_end],
                     self.rewards[trajectory_start : trajectory_end],
                     self.next_states[trajectory_start : trajectory_end],
-                    self.terminals[trajectory_start : trajectory_end]
+                    self.not_terminals[trajectory_start : trajectory_end]
                 ]
             ).to(self.device)
 
@@ -280,7 +289,7 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
         for td_index in range(len(td_errors)):
             self.priorities.set_leaf(indexes[td_index], td_errors[td_index])
 
-    def sample_buffer(self, batch_size: int) -> Tuple[BufferSample, np.ndarray, torch.Tensor]:
+    def sample_buffer(self, batch_size: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], np.ndarray, torch.Tensor]:
         # Don't need to worry about empty slots since the priorities intrinsically handle it
 
         """
@@ -363,15 +372,13 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
 
         importance_sampling_weights = torch.tensor(importance_sampling_weights).to(self.device)
 
-        buffer = BufferSample(
+        return (
             torch.FloatTensor(self.states[indexes]).to(self.device),
             torch.FloatTensor(self.actions[indexes]).to(self.device),
             torch.FloatTensor(self.rewards[indexes]).to(self.device),
             torch.FloatTensor(self.next_states[indexes]).to(self.device),
-            torch.FloatTensor(self.terminals[indexes]).to(self.device)
-        )
-
-        return buffer, indexes, importance_sampling_weights
+            torch.FloatTensor(self.not_terminals[indexes]).to(self.device)
+        ), indexes, importance_sampling_weights
     
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
         raise NotImplementedError("Trajectories are unsupported for this buffer")
