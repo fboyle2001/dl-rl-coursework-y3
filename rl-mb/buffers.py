@@ -239,23 +239,33 @@ class StandardReplayBuffer(AbstractReplayBuffer):
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
         suitable_ends = np.where(self.trajectories[:, 0] > steps_per_trajectory)[0]
         selected_ends = np.random.choice(suitable_ends, trajectory_count, replace=True)
-        trajectories = []
 
-        for trajectory_end in selected_ends:
-            trajectory_start = trajectory_end - steps_per_trajectory
-            trajectory = torch.tensor(
-                [
-                    self.states[trajectory_start : trajectory_end],
-                    self.actions[trajectory_start : trajectory_end],
-                    self.rewards[trajectory_start : trajectory_end],
-                    self.next_states[trajectory_start : trajectory_end],
-                    self.not_terminals[trajectory_start : trajectory_end]
-                ]
-            ).to(self.device)
+        states = []
+        actions = []
+        rewards = []
+        starts = selected_ends - steps_per_trajectory
 
-            trajectories.append(trajectory)
+        for t in range(steps_per_trajectory):
+            states.append(self.states[starts + t])
+            actions.append(self.actions[starts + t])
+            rewards.append(self.rewards[starts + t])
 
-        return torch.stack(trajectories)
+        # for trajectory_end in selected_ends:
+        #     trajectory_start = trajectory_end - steps_per_trajectory
+
+        #     states.append(self.states[trajectory_start : trajectory_end])
+        #     actions.append(self.actions[trajectory_start : trajectory_end])
+        #     rewards.append(self.rewards[trajectory_start : trajectory_end])
+
+        states = np.stack(states)
+        actions = np.stack(actions) 
+        rewards = np.stack(rewards)
+
+        states = torch.from_numpy(states).float().to(self.device)
+        actions = torch.from_numpy(actions).float().to(self.device)
+        rewards = torch.from_numpy(rewards).to(self.device)
+
+        return states, actions, rewards
 
 class PriorityReplayBuffer(AbstractReplayBuffer):
     def __init__(self, state_dim: int, action_dim: int, leaf_power: int, device: Union[str, torch.device]):

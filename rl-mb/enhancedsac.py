@@ -92,7 +92,7 @@ class EnhancedSACAgent(RLAgent):
         # Simple to train, just MSE between predicted and real
         states_actions = torch.cat([states, actions], dim=-1)
         predicted_rewards = self.reward_model(states_actions)
-        # rewards = rewards.unsqueeze(1)
+        rewards = rewards.unsqueeze(1)
 
         assert predicted_rewards.shape == rewards.shape
 
@@ -104,7 +104,7 @@ class EnhancedSACAgent(RLAgent):
         self.opt_rewards.step()
 
     def update_terminations(self, states, actions, not_dones):
-        dones = (1. - not_dones)
+        dones = (1. - not_dones).unsqueeze(1)
 
         states_actions = torch.cat([states, actions], dim=-1)
         predicted = self.termination_model(states_actions)
@@ -148,7 +148,7 @@ class EnhancedSACAgent(RLAgent):
         if self.real_ratio == 1:
             return
 
-        states, _, nr, ns, _, nd = self.replay_buffer.sample(self.rollouts_per_step * self.rollout_lifetime_steps)
+        states, _, nr, ns, nd = self.replay_buffer.sample_buffer(self.rollouts_per_step * self.rollout_lifetime_steps)
         nd = 1 - nd # We want to know if it is done rather than not done
 
         for i in range(self.rollout_length):
@@ -162,12 +162,11 @@ class EnhancedSACAgent(RLAgent):
             done[torch.where(done >= 0.5)] = 1
             done[torch.where(done < 0.5)] = 0
 
-            self.model_buffer.bulk_add(
+            self.model_buffer.overwrite(
                 states.detach().cpu().numpy(),
                 actions.detach().cpu().numpy(),
                 reward.detach().cpu().numpy(),
                 next_states.detach().cpu().numpy(),
-                done.detach().cpu().numpy(),
                 done.detach().cpu().numpy()
             )
 
@@ -181,24 +180,24 @@ class EnhancedSACAgent(RLAgent):
 
     def train_policy(self) -> None:
         # Need to fill the buffer before we can do anything
-        if len(self.replay_buffer) < self.replay_batch_size:
+        if self.replay_buffer.count < self.replay_batch_size:
             return
 
         self._train_steps += 1
 
         for s in range(self.M_steps):
             # Firstly update the Q functions (the critics)
-            states, actions, rewards, next_states, not_dones, not_dones_no_max = self.replay_buffer.sample(self.replay_batch_size)
+            states, actions, rewards, next_states, not_dones = self.replay_buffer.sample_buffer(self.replay_batch_size)
 
             # Update reward and termination models
-            self.update_terminations(states, actions, not_dones_no_max)
+            self.update_terminations(states, actions, not_dones)
             self.update_rewards(states, actions, rewards)
 
             # if self.steps > self.warmup_steps:
             #    print("Taking step", len(self.model_buffer))
 
             # Mix in some fake samples
-            if len(self.model_buffer) != 0:
+            if self.model_buffer.count != 0:
                 real_count = int(self.replay_batch_size * self.real_ratio)
                 fake_count = self.replay_batch_size - real_count
 
@@ -208,7 +207,7 @@ class EnhancedSACAgent(RLAgent):
                 #print(f"Sampling {fake_count} fakes")
 
                 #rstates, ractions, rrewards, rnext_states, rnot_dones, rnot_dones_no_max = self.replay_buffer.sample(real_count)
-                fstates, factions, frewards, fnext_states, fnot_dones, fnot_dones_no_max = self.model_buffer.sample(fake_count)
+                fstates, factions, frewards, fnext_states, fnot_dones = self.model_buffer.sample_buffer(fake_count)
 
                 shuffle = torch.randperm(real_count + fake_count)
 
@@ -217,7 +216,6 @@ class EnhancedSACAgent(RLAgent):
                 rewards = torch.cat([rewards[:real_count], frewards], dim=0)[shuffle]
                 next_states = torch.cat([next_states[:real_count], fnext_states], dim=0)[shuffle]
                 not_dones = torch.cat([not_dones[:real_count], fnot_dones], dim=0)[shuffle]
-                not_dones_no_max = torch.cat([not_dones_no_max[:real_count], fnot_dones_no_max], dim=0)[shuffle]
 
             if self._train_steps % self.critic_update_freq == 0:
                 # Q Target
@@ -240,7 +238,7 @@ class EnhancedSACAgent(RLAgent):
 
                     # Compute r(s_t, a_t) + gamma * E_{s_[t+1] ~ p}(V_target(s_[t+1]))
                     # target_Q = rewards.unsqueeze(1) + not_dones_no_max.unsqueeze(1) * self.gamma * min_Q_target 
-                    target_Q = rewards + not_dones_no_max * self.gamma * min_Q_target 
+                    target_Q = rewards.unsqueeze(1) + not_dones.unsqueeze(1) * self.gamma * min_Q_target 
                     
                     # Log for TB
                     self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._train_steps)
@@ -321,11 +319,14 @@ class EnhancedSACAgent(RLAgent):
         if self.steps < self.warmup_steps:
             return
 
+        return
+
         # Multi-step updates
         for _ in range(self.M_seqs):
             # Now we move on to updating the dynamics model
             # Start by sampling the multi-step trajectories
-            states, actions, rewards = self.replay_buffer.sample_multistep(self.multi_step_batch_size, self.horizon)
+            states, actions, rewards = self.replay_buffer.sample_trajectories(self.multi_step_batch_size, self.horizon)
+            # print(states.shape)
             dynamics_loss = self.dynamics.update_step(states, actions, rewards, self._writer, self.steps)
             self._writer.add_scalar("loss/dynamics", dynamics_loss, self._train_steps)
 
@@ -362,13 +363,13 @@ class EnhancedSACAgent(RLAgent):
                     self.train_policy()
                 
                 next_state, reward, done, _ = self.env.step(action)
-                done_no_max = float(done) if self._episode_steps + 1 < self._max_episodes else 0.
+                is_terminal_not_cutoff = done if self._episode_steps + 1 < self._max_episodes else False
 
                 self._steps += 1
                 self._episode_steps += 1
                 episode_reward += reward
 
-                self.replay_buffer.add(state, action, reward, next_state, float(done), done_no_max)
+                self.replay_buffer.store_replay(state, action, reward, next_state, is_terminal_not_cutoff)
                 state = next_state 
             
             self._writer.add_scalar("stats/reward", episode_reward, self.episodes)
