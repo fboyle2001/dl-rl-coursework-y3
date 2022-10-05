@@ -366,6 +366,7 @@ class EnsembleGaussianDynamics:
         
         self.losses = best_eval_losses
 
+# From 
 def get_params(models):
     for m in models:
         for p in m.parameters():
@@ -412,9 +413,9 @@ class GRUDynamicsModel(nn.Module):
         self.horizon = horizon
         self.clip_grad = clip_grad
 
-        self.encoder = create_fully_connected_network(input_size, latent_dim, hidden_layers=[coder_hidden_dim for _ in range(encoder_hidden_depth + 1)], output_activation=None)
-        self.model = nn.GRU(input_size=latent_dim, hidden_size=latent_dim, num_layers=gru_layers)
-        self.decoder = create_fully_connected_network(latent_dim, output_size, hidden_layers=[coder_hidden_dim for _ in range(decoder_hidden_depth + 1)], output_activation=None)
+        self.encoder = create_fully_connected_network(input_size, latent_dim, hidden_layers=[coder_hidden_dim for _ in range(encoder_hidden_depth + 1)], output_activation=None).to(self.device)
+        self.model = nn.GRU(input_size=latent_dim, hidden_size=latent_dim, num_layers=gru_layers).to(self.device)
+        self.decoder = create_fully_connected_network(latent_dim, output_size, hidden_layers=[coder_hidden_dim for _ in range(decoder_hidden_depth + 1)], output_activation=None).to(self.device)
 
         params = get_params([self.encoder, self.model, self.decoder])
         self.optimiser = torch.optim.Adam(params, lr=lr) # type: ignore
@@ -442,7 +443,7 @@ class GRUDynamicsModel(nn.Module):
 
         for _ in range(self.horizon - 1):
             # Sample the action to take
-            actions, action_log_prob =  actor.compute(current_state, stochastic)
+            actions, action_log_prob = actor.compute(current_state, stochastic)
             action_sequence.append(actions)
             log_probs.append(action_log_prob)
 
@@ -450,34 +451,31 @@ class GRUDynamicsModel(nn.Module):
 
             # Estimate the change in state
             joined_states_actions = torch.cat([current_state, actions], dim=-1)
-            encoded = self.encoder(joined_states_actions).unsqueeze(0) # Need to unsqueeze?
+            encoded = self.encoder(joined_states_actions).unsqueeze(0)
             latent_delta_next_state, hidden_state = self.model(encoded, hidden_state)
 
             # Move to the next state
-            next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0)) # Need to squeeze?
+            next_state = current_state + self.decoder(latent_delta_next_state.squeeze(0))
             # print("Next state shape:", next_state.shape)
 
             # Track the predicted states
             predicted_states.append(next_state)
             current_state = next_state
         
-        # Believe the final one will be used to check termination?
         final_action, final_log_prob = actor.compute(current_state, stochastic)
         action_sequence.append(final_action)
         log_probs.append(final_log_prob)
 
-        # print("PSL", len(predicted_states))
-
         policy_actions = torch.stack(action_sequence)
         predicted_states = torch.stack(predicted_states)
-        log_probs = torch.stack(log_probs).squeeze(2) # Need to squeeze?
+        log_probs = torch.stack(log_probs).squeeze(2)
 
         # Log probs are need for V_(0:H)^(pi, alpha)[x] for optimisation
         return predicted_states, policy_actions, log_probs
 
     def predict_states(self, initial_state: torch.Tensor, action_sequence: torch.Tensor) -> torch.Tensor:
         predicted_states = []
-        hidden_state = torch.zeros(self.gru_layers, initial_state.shape[0], self.latent_dim).to(self.device)
+        hidden_state = torch.zeros(self.gru_layers, initial_state.shape[0], self.latent_dim, device=self.device)
         current_state = initial_state
 
         for action_index in range(action_sequence.shape[0]):
@@ -498,7 +496,7 @@ class GRUDynamicsModel(nn.Module):
         predicted_states = torch.stack(predicted_states)
         return predicted_states
 
-    def train(self, states: torch.Tensor, actions: torch.Tensor) -> float:
+    def train_model(self, states: torch.Tensor, actions: torch.Tensor) -> float:
         # Predict states from the first state 
         predicted_states = self.forward(states[0], actions[:-1])
         # Want to match it to the real next states

@@ -226,25 +226,25 @@ class StandardTD3Agent(RLAgent):
         if self.replay_buffer.count < self.replay_batch_size:
             return
         
-        buffer_sample = self.replay_buffer.sample_buffer(self.replay_batch_size)
+        states, actions, rewards, next_states, terminals = self.replay_buffer.sample_buffer(self.replay_batch_size)
 
         # Q Target
         with torch.no_grad():
-            noise = self.noise_distribution.sample(buffer_sample.actions.shape).clamp(-self.noise_clip, self.noise_clip).to(self.device)
-            target_actions = self.target_actor(buffer_sample.next_states).clamp(-self._max_action, self._max_action)
+            noise = self.noise_distribution.sample(actions.shape).clamp(-self.noise_clip, self.noise_clip).to(self.device)
+            target_actions = self.target_actor(next_states).clamp(-self._max_action, self._max_action)
             target_actions = (target_actions + noise).clamp(-1, 1)
 
-            target_input = torch.cat([buffer_sample.next_states, target_actions], dim=-1)
+            target_input = torch.cat([next_states, target_actions], dim=-1)
 
             target_Q1 = self.target_critic_1(target_input)
             target_Q2 = self.target_critic_2(target_input)
             min_Q_target = torch.min(target_Q1, target_Q2)
 
             # Temporal Difference Learning
-            target_Q = buffer_sample.rewards.unsqueeze(1) + buffer_sample.terminals.unsqueeze(1) * self.gamma * min_Q_target 
+            target_Q = rewards.unsqueeze(1) + terminals.unsqueeze(1) * self.gamma * min_Q_target 
             self._writer.add_scalar("stats/target_q", target_Q.detach().cpu().mean().item(), self._steps)
 
-        actual_input = torch.cat([buffer_sample.states, buffer_sample.actions], dim=-1)
+        actual_input = torch.cat([states, actions], dim=-1)
 
         actual_Q1 = self.critic_1(actual_input)
         self._writer.add_scalar("stats/critic_1", actual_Q1.detach().cpu().mean().item(), self._steps)
@@ -264,7 +264,7 @@ class StandardTD3Agent(RLAgent):
 
         # Delayed policy updates
         if self._steps % self.policy_update_frequency == 0:
-            actor_input = torch.cat([buffer_sample.states, self.actor(buffer_sample.states)], dim=-1)
+            actor_input = torch.cat([states, self.actor(states)], dim=-1)
             actor_loss = -self.critic_1(actor_input).mean()
             
             self._writer.add_scalar("stats/actor_loss", actor_loss.detach().cpu().item(), self._steps)

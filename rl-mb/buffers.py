@@ -391,7 +391,28 @@ class PriorityReplayBuffer(AbstractReplayBuffer):
         ), indexes, importance_sampling_weights
     
     def sample_trajectories(self, trajectory_count: int, steps_per_trajectory: int):
-        raise NotImplementedError("Trajectories are unsupported for this buffer")
+        suitable_ends = np.where(self.trajectories[:, 0] > steps_per_trajectory)[0]
+        selected_ends = np.random.choice(suitable_ends, trajectory_count, replace=True)
+
+        states = []
+        actions = []
+        rewards = []
+        starts = selected_ends - steps_per_trajectory
+
+        for t in range(steps_per_trajectory):
+            states.append(self.states[starts + t])
+            actions.append(self.actions[starts + t])
+            rewards.append(self.rewards[starts + t])
+
+        states = np.stack(states)
+        actions = np.stack(actions) 
+        rewards = np.stack(rewards)
+
+        states = torch.from_numpy(states).float().to(self.device)
+        actions = torch.from_numpy(actions).float().to(self.device)
+        rewards = torch.from_numpy(rewards).to(self.device)
+
+        return states, actions, rewards
 
 # https://pswww.slac.stanford.edu/svn-readonly/psdmrepo/RunSummary/trunk/src/welford.py
 class Welford(object):
@@ -518,15 +539,13 @@ class MultiStepReplayBuffer:
         self.pointer = 0
         self.count = 0
         self.sequence_length = 0
-        self.welford = Welford()
-        self.normalise = normalise
+
+    def store_replays(self, states: np.ndarray, actions: np.ndarray, rewards: np.ndarray, next_states: np.ndarray, terminals: np.ndarray) -> None:
+        for replay_index in range(states.shape[0]):
+            self.store(states[replay_index], actions[replay_index], rewards[replay_index], next_states[replay_index], terminals[replay_index], terminals[replay_index])
 
     def store(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, true_done: bool, done: bool) -> None:
         self.sequence_length += 1
-
-        if self.normalise:
-            # Lets normalise everything as it comes in
-            self.welford.add_data(state)
 
         true_not_done = not true_done
         not_done = not done
@@ -545,24 +564,10 @@ class MultiStepReplayBuffer:
         self.count = min(self.count + 1, self.max_size)
         self.pointer = (self.pointer + 1) % self.max_size
 
-    def get_obs_stats(self):
-        MIN_STD = 1e-1
-        MAX_STD = 10
-        mean = self.welford.mean()
-        std = self.welford.std()
-        std[std < MIN_STD] = MIN_STD
-        std[std > MAX_STD] = MAX_STD
-        return mean, std
-
     def sample(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         random_sample = np.random.choice(self.count, size=batch_size)
         states = self.states[random_sample]
         next_states = self.next_states[random_sample]
-
-        if self.normalise:
-            mu, sigma = self.get_obs_stats()
-            states = (states - mu) / sigma
-            next_states = (next_states - mu) / sigma
 
         return (
             torch.tensor(states, dtype=torch.float32).to(self.device),
@@ -584,8 +589,6 @@ class MultiStepReplayBuffer:
         timestepped_states = []
         timestepped_actions = []
         timestepped_rewards = []
-
-        mu, sigma = self.get_obs_stats() if self.normalise else(0, 1)
 
         for offset in range(0, sequence_length):
             time_states = (self.states[selected_final_indices - sequence_length + offset] - mu) / sigma
